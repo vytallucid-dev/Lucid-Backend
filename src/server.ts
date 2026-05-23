@@ -28,7 +28,12 @@ async function bootstrap(): Promise<void> {
 
     const server = app.listen(env.PORT, () => {
       logger.info(`Lucid backend running on port ${env.PORT} (${env.NODE_ENV})`);
-      logger.info(`Local URL: http://localhost:${env.PORT}`);
+
+      if (env.NODE_ENV === 'development') {
+        logger.info(`Local URL: http://localhost:${env.PORT}`);
+      } else if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+        logger.info(`Public URL: https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
+      }
     });
 
     const shutdown = async (signal: string): Promise<void> => {
