@@ -32,7 +32,7 @@ async function bootstrap(): Promise<void> {
       if (env.NODE_ENV === 'development') {
         logger.info(`Local URL: http://localhost:${env.PORT}`);
       } else if (process.env.RAILWAY_PUBLIC_DOMAIN) {
-        logger.info(`Public URL: https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
+        logger.info(`Lucid production backend is live and listening on port ${env.PORT}`);
       }
     });
 
