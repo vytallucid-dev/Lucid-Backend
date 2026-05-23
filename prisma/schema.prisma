@@ -1,0 +1,520 @@
+// Lucid Backend - Prisma Schema
+// Phase 1: Foundation schema for NIFTY tool and EdgeFinder tool.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// =========================================================
+// ENUMS
+// =========================================================
+
+enum AssetClass {
+  index
+  forex_pair
+  commodity
+  equity
+  currency
+}
+
+enum IndicatorCategory {
+  domestic
+  flow
+  sentiment
+  global
+  india_specific
+}
+
+enum IndicatorTool {
+  nifty
+  edgefinder
+  shared
+}
+
+enum IndicatorFrequency {
+  daily
+  weekly
+  monthly
+  quarterly
+  event_driven
+}
+
+enum DataSource {
+  fred
+  nse_scrape
+  cftc
+  manual
+  derived
+  yahoo
+  jblanked // dead value, no rows use it, kept for enum stability
+  forex_factory
+}
+
+enum ScoringRuleType {
+  threshold
+  direction
+  band
+  custom
+  normal
+  inverted
+  cpi_rate_cycle
+  us02y_sma
+  rate_decision
+  cot_two_component
+}
+
+enum DataQualityFlag {
+  estimated
+  revised
+  carry_forward
+  suspect
+}
+
+enum FetchTriggerType {
+  cron
+  manual
+  backfill
+}
+
+enum FetchStatus {
+  running
+  success
+  partial
+  failed
+}
+
+enum UserRole {
+  user
+  admin
+}
+
+enum CompositeGroup {
+  domestic
+  external
+}
+
+enum ToolName {
+  nifty
+  edgefinder
+}
+
+// =========================================================
+// REFERENCE TABLES
+// =========================================================
+
+model Asset {
+  id         String     @id @default(uuid())
+  code       String     @unique @db.VarChar(20)
+  name       String     @db.VarChar(100)
+  assetClass AssetClass @map("asset_class")
+  toolScope  String[]   @map("tool_scope")
+  metadata   Json?
+  isActive   Boolean    @default(true) @map("is_active")
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+
+  edgefinderScorecards EdgefinderScorecard[]
+  edgefinderPairScores EdgefinderPairScore[]
+  cotData              CotData[]
+
+  @@index([assetClass])
+  @@index([toolScope], type: Gin)
+  @@map("assets")
+}
+
+model Indicator {
+  id             String             @id @default(uuid())
+  code           String             @unique @db.VarChar(50)
+  name           String             @db.VarChar(200)
+  category       IndicatorCategory
+  tool           IndicatorTool
+  frequency      IndicatorFrequency
+  unit           String?            @db.VarChar(20)
+  dataSource     DataSource         @map("data_source")
+  sourceSeriesId String?            @map("source_series_id") @db.VarChar(50)
+  description    String?
+  displayOrder   Int?               @map("display_order")
+  compositeGroup CompositeGroup?    @map("composite_group")
+  country        String?            @db.VarChar(3)
+  uiGroup        String?            @map("ui_group") @db.VarChar(20)
+  isActive       Boolean            @default(true) @map("is_active")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+
+  scoringRules ScoringRule[]
+  dataPoints   DataPoint[]
+  scores       Score[]
+
+  @@index([tool, isActive])
+  @@index([dataSource, frequency])
+  @@map("indicators")
+}
+
+model ScoringRule {
+  id             String          @id @default(uuid())
+  indicatorId    String          @map("indicator_id")
+  version        Int
+  ruleType       ScoringRuleType @map("rule_type")
+  ruleDefinition Json            @map("rule_definition")
+  effectiveFrom  DateTime        @map("effective_from") @db.Date
+  effectiveTo    DateTime?       @map("effective_to") @db.Date
+  notes          String?
+  createdAt      DateTime        @default(now()) @map("created_at")
+  createdBy      String?         @map("created_by")
+
+  indicator Indicator @relation(fields: [indicatorId], references: [id])
+  scores    Score[]
+
+  @@unique([indicatorId, version])
+  @@index([indicatorId, effectiveFrom])
+  @@map("scoring_rules")
+}
+
+model ScorecardRatingRule {
+  id            String    @id @default(uuid())
+  tool          ToolName
+  version       Int
+  rules         Json
+  effectiveFrom DateTime  @map("effective_from") @db.Date
+  effectiveTo   DateTime? @map("effective_to") @db.Date
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  niftyScorecards NiftyScorecard[]
+
+  @@unique([tool, version])
+  @@map("scorecard_rating_rules")
+}
+
+// =========================================================
+// DATA TABLES
+// =========================================================
+
+model DataPoint {
+  id              String           @id @default(uuid())
+  indicatorId     String           @map("indicator_id")
+  observationDate DateTime         @map("observation_date") @db.Date
+  value           Decimal          @db.Decimal(20, 6)
+  forecastValue   Decimal?         @map("forecast_value") @db.Decimal(20, 6)
+  previousValue   Decimal?         @map("previous_value") @db.Decimal(20, 6)
+  vintageDate     DateTime         @default(now()) @map("vintage_date")
+  isCurrent       Boolean          @default(true) @map("is_current")
+  dataQualityFlag DataQualityFlag? @map("data_quality_flag")
+  source          DataSource
+  sourceMetadata  Json?            @map("source_metadata")
+  notes           String?
+  fetchedVia      String?          @map("fetched_via")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  createdBy       String?          @map("created_by")
+
+  indicator Indicator     @relation(fields: [indicatorId], references: [id])
+  fetchLog  DataFetchLog? @relation(fields: [fetchedVia], references: [id])
+  scores    Score[]
+
+  @@unique([indicatorId, observationDate, vintageDate])
+  @@index([indicatorId, observationDate(sort: Desc)])
+  @@index([vintageDate(sort: Desc)])
+  @@index([source, createdAt(sort: Desc)])
+  @@map("data_points")
+}
+
+model DataFetchLog {
+  id             String           @id @default(uuid())
+  jobName        String           @map("job_name") @db.VarChar(100)
+  triggerType    FetchTriggerType @map("trigger_type")
+  triggeredBy    String?          @map("triggered_by")
+  targetDateFrom DateTime?        @map("target_date_from") @db.Date
+  targetDateTo   DateTime?        @map("target_date_to") @db.Date
+  status         FetchStatus
+  startedAt      DateTime         @default(now()) @map("started_at")
+  completedAt    DateTime?        @map("completed_at")
+  durationMs     Int?             @map("duration_ms")
+  rowsInserted   Int              @default(0) @map("rows_inserted")
+  rowsUpdated    Int              @default(0) @map("rows_updated")
+  rowsSkipped    Int              @default(0) @map("rows_skipped")
+  errors         Json?
+  metadata       Json?
+
+  dataPoints DataPoint[]
+
+  @@index([jobName, startedAt(sort: Desc)])
+  @@index([status, startedAt(sort: Desc)])
+  @@index([triggeredBy])
+  @@map("data_fetch_log")
+}
+
+// =========================================================
+// SCORING TABLES
+// =========================================================
+
+model Score {
+  id                  String   @id @default(uuid())
+  indicatorId         String   @map("indicator_id")
+  observationDate     DateTime @map("observation_date") @db.Date
+  score               Int      @db.SmallInt
+  flag                String?  @db.VarChar(50)
+  ruleVersionId       String   @map("rule_version_id")
+  dataPointId         String   @map("data_point_id")
+  computedAt          DateTime @default(now()) @map("computed_at")
+  computationMetadata Json?    @map("computation_metadata")
+
+  indicator   Indicator   @relation(fields: [indicatorId], references: [id])
+  ruleVersion ScoringRule @relation(fields: [ruleVersionId], references: [id])
+  dataPoint   DataPoint   @relation(fields: [dataPointId], references: [id])
+
+  @@unique([indicatorId, observationDate, ruleVersionId])
+  @@index([indicatorId, observationDate(sort: Desc)])
+  @@index([observationDate, indicatorId])
+  @@index([ruleVersionId])
+  @@map("scores")
+}
+
+model NiftyScorecard {
+  id                    String   @id @default(uuid())
+  observationDate       DateTime @map("observation_date") @db.Date
+  vintageDate           DateTime @default(now()) @map("vintage_date")
+  isCurrent             Boolean  @default(true) @map("is_current")
+  toolVersion           Int      @default(2) @map("tool_version")
+  ratingRuleId          String   @map("rating_rule_id")
+  netScore              Int      @map("net_score") @db.SmallInt
+  domesticScore         Int      @map("domestic_score") @db.SmallInt
+  externalScore         Int      @map("external_score") @db.SmallInt
+  positiveCount         Int      @map("positive_count") @db.SmallInt
+  negativeCount         Int      @map("negative_count") @db.SmallInt
+  neutralCount          Int      @map("neutral_count") @db.SmallInt
+  ratingLabel           String   @map("rating_label") @db.VarChar(30)
+  specialFlags          Json?    @map("special_flags")
+  ind9RawComposite      Int?     @map("ind_9_raw_composite") @db.SmallInt
+  compositionFlag       String?  @map("composition_flag") @db.VarChar(40)
+  conflictFlag          Boolean  @default(false) @map("conflict_flag")
+  peakScoreCeilingState Json?    @map("peak_score_ceiling_state")
+  band                  String?  @db.VarChar(20)
+  niftyClose            Decimal? @map("nifty_close") @db.Decimal(10, 2)
+  scoreVelocity1d       Decimal? @map("score_velocity_1d") @db.Decimal(6, 2)
+  scoreVelocity5d       Decimal? @map("score_velocity_5d") @db.Decimal(6, 2)
+  indicatorBreakdown    Json     @map("indicator_breakdown")
+  computedAt            DateTime @default(now()) @map("computed_at")
+  isStale               Boolean  @default(false) @map("is_stale")
+
+  ratingRule ScorecardRatingRule @relation(fields: [ratingRuleId], references: [id])
+
+  @@unique([observationDate, vintageDate], name: "nifty_scorecard_observation_vintage_unique")
+  @@index([ratingLabel, observationDate(sort: Desc)])
+  @@index([observationDate, isCurrent], map: "nifty_scorecards_observation_current_idx")
+  @@map("nifty_scorecards")
+}
+
+model EdgefinderScorecard {
+  id              String   @id @default(uuid())
+  assetId         String   @map("asset_id")
+  observationDate DateTime @map("observation_date") @db.Date
+
+  vintageDate DateTime @default(now()) @map("vintage_date")
+  isCurrent   Boolean  @default(true) @map("is_current")
+
+  baseFundamentalsScore Int    @map("base_fundamentals_score") @db.SmallInt
+  fundamentalsScore     Int    @map("fundamentals_score") @db.SmallInt
+  cotScore              Int    @map("cot_score") @db.SmallInt
+  totalScore            Int    @map("total_score") @db.SmallInt
+  ratingLabel           String @map("rating_label") @db.VarChar(30)
+
+  compassAdjustment       Int     @default(0) @map("compass_adjustment") @db.SmallInt
+  compassOverridesApplied Json?   @map("compass_overrides_applied")
+  regimeAtCompute         String? @map("regime_at_compute") @db.VarChar(15)
+
+  indicatorBreakdown Json  @map("indicator_breakdown")
+  cotBreakdown       Json? @map("cot_breakdown")
+
+  computedAt DateTime @default(now()) @map("computed_at")
+  isStale    Boolean  @default(false) @map("is_stale")
+
+  asset Asset @relation(fields: [assetId], references: [id])
+
+  @@unique([assetId, observationDate, vintageDate])
+  @@index([assetId, observationDate(sort: Desc)])
+  @@index([observationDate, totalScore(sort: Desc)])
+  @@index([observationDate, isCurrent], map: "edgefinder_scorecards_observation_current_idx")
+  @@map("edgefinder_scorecards")
+}
+
+model EdgefinderPairScore {
+  id        String   @id @default(uuid())
+  pairId    String   @map("pair_id")
+  scoreDate DateTime @map("score_date") @db.Date
+
+  vintageDate DateTime @default(now()) @map("vintage_date")
+  isCurrent   Boolean  @default(true) @map("is_current")
+
+  basePairScore     Int @map("base_pair_score") @db.SmallInt
+  pairCotScore      Int @map("pair_cot_score") @db.SmallInt
+  baseTotal         Int @map("base_total") @db.SmallInt
+  compassAdjustment Int @default(0) @map("compass_adjustment") @db.SmallInt
+  totalScore        Int @map("total_score") @db.SmallInt
+
+  compassOverridesApplied Json?   @map("compass_overrides_applied")
+  regimeAtCompute         String? @map("regime_at_compute") @db.VarChar(15)
+  ratingLabel             String  @map("rating_label") @db.VarChar(30)
+
+  rowBreakdown Json  @map("row_breakdown")
+  cotBreakdown Json? @map("cot_breakdown")
+
+  computedAt DateTime @default(now()) @map("computed_at")
+
+  pair Asset @relation(fields: [pairId], references: [id])
+
+  @@unique([pairId, scoreDate, vintageDate])
+  @@index([pairId, scoreDate(sort: Desc)])
+  @@index([scoreDate, isCurrent], map: "edgefinder_pair_scores_score_date_current_idx")
+  @@map("edgefinder_pair_scores")
+}
+
+// =========================================================
+// USER TABLE
+// =========================================================
+
+model User {
+  id          String    @id @db.Uuid
+  email       String    @unique @db.VarChar(255)
+  displayName String?   @map("display_name") @db.VarChar(100)
+  role        UserRole  @default(user)
+  metadata    Json?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  @@map("users")
+}
+
+// =========================================================
+// SCAFFOLDED TABLES (EdgeFinder, empty shells)
+// =========================================================
+
+model CotData {
+  id                     String     @id @default(uuid())
+  assetId                String     @map("asset_id")
+  contractCode           String     @map("contract_code") @db.VarChar(30)
+  reportDate             DateTime   @map("report_date") @db.Date
+  releaseDate            DateTime   @map("release_date") @db.Date
+  traderCategory         String     @map("trader_category") @db.VarChar(30)
+  longContracts          Int?       @map("long_contracts")
+  shortContracts         Int?       @map("short_contracts")
+  longPct                Decimal?   @map("long_pct") @db.Decimal(8, 4)
+  shortPct               Decimal?   @map("short_pct") @db.Decimal(8, 4)
+  changeInLongContracts  Int?       @map("change_in_long_contracts")
+  changeInShortContracts Int?       @map("change_in_short_contracts")
+  changeInLongPct        Decimal?   @map("change_in_long_pct") @db.Decimal(8, 4)
+  changeInShortPct       Decimal?   @map("change_in_short_pct") @db.Decimal(8, 4)
+  weeklyChangePct        Decimal?   @map("weekly_change_pct") @db.Decimal(8, 4)
+  netPositioningLabel    String?    @map("net_positioning_label") @db.VarChar(15)
+  changeLabel            String?    @map("change_label") @db.VarChar(15)
+  source                 DataSource
+  rawPayload             Json?      @map("raw_payload")
+  vintageDate            DateTime   @default(now()) @map("vintage_date")
+  isCurrent              Boolean    @default(true) @map("is_current")
+  createdAt              DateTime   @default(now()) @map("created_at")
+
+  asset Asset @relation(fields: [assetId], references: [id])
+
+  @@unique([contractCode, reportDate, traderCategory, vintageDate])
+  @@index([contractCode, reportDate(sort: Desc)])
+  @@index([assetId, reportDate(sort: Desc)])
+  @@index([vintageDate(sort: Desc)])
+  @@map("cot_data")
+}
+
+// =========================================================
+// EDGEFINDER REFERENCE + COMPASS TABLES
+// =========================================================
+
+model CurrencyCycleStance {
+  id            String    @id @default(uuid())
+  currencyCode  String    @map("currency_code") @db.VarChar(3)
+  stance        String    @db.VarChar(10)
+  effectiveFrom DateTime  @map("effective_from") @db.Date
+  effectiveTo   DateTime? @map("effective_to") @db.Date
+  notes         String?
+  createdAt     DateTime  @default(now()) @map("created_at")
+  createdBy     String?   @map("created_by")
+
+  @@unique([currencyCode, effectiveFrom])
+  @@index([currencyCode, effectiveFrom(sort: Desc)])
+  @@map("currency_cycle_stance")
+}
+
+model PairTemplateRow {
+  id               String  @id @default(uuid())
+  rowCode          String  @unique @map("row_code") @db.VarChar(30)
+  displayName      String  @map("display_name") @db.VarChar(50)
+  uiGroup          String  @map("ui_group") @db.VarChar(20)
+  treatment        String  @db.VarChar(30)
+  usIndicatorCode  String? @map("us_indicator_code") @db.VarChar(50)
+  eurIndicatorCode String? @map("eur_indicator_code") @db.VarChar(50)
+  gbpIndicatorCode String? @map("gbp_indicator_code") @db.VarChar(50)
+  jpyIndicatorCode String? @map("jpy_indicator_code") @db.VarChar(50)
+  rowOrder         Int     @map("row_order")
+  isActive         Boolean @default(true) @map("is_active")
+
+  @@index([rowOrder])
+  @@map("pair_template_rows")
+}
+
+model CompassInput {
+  id              String     @id @default(uuid())
+  observationDate DateTime   @map("observation_date") @db.Date
+  inputCode       String     @map("input_code") @db.VarChar(30)
+  rawValue        Decimal?   @map("raw_value") @db.Decimal(20, 6)
+  derivedValue    Decimal?   @map("derived_value") @db.Decimal(20, 6)
+  colorBand       String     @map("color_band") @db.VarChar(10)
+  subChecks       Json?      @map("sub_checks")
+  source          DataSource
+  isValidation    Boolean    @default(false) @map("is_validation")
+  computedAt      DateTime   @default(now()) @map("computed_at")
+
+  @@unique([observationDate, inputCode, isValidation])
+  @@index([observationDate(sort: Desc)])
+  @@index([inputCode, observationDate(sort: Desc)])
+  @@index([observationDate, isValidation])
+  @@map("compass_inputs")
+}
+
+model CompassClassification {
+  id                 String   @id @default(uuid())
+  classificationDate DateTime @map("classification_date") @db.Date
+  vintageDate        DateTime @default(now()) @map("vintage_date")
+  isCurrent          Boolean  @default(true) @map("is_current")
+
+  candidateRegime      String  @map("candidate_regime") @db.VarChar(15)
+  activeRegime         String  @map("active_regime") @db.VarChar(15)
+  persistenceDaysCount Int     @default(0) @map("persistence_days_count")
+  crisisOverrideFired  Boolean @default(false) @map("crisis_override_fired")
+
+  totalGreenWeight  Decimal @map("total_green_weight") @db.Decimal(5, 2)
+  totalYellowWeight Decimal @map("total_yellow_weight") @db.Decimal(5, 2)
+  totalRedWeight    Decimal @map("total_red_weight") @db.Decimal(5, 2)
+
+  voteBreakdown Json     @map("vote_breakdown")
+  isValidation  Boolean  @default(false) @map("is_validation")
+  computedAt    DateTime @default(now()) @map("computed_at")
+
+  @@unique([classificationDate, vintageDate])
+  @@index([classificationDate(sort: Desc)])
+  @@index([classificationDate, isCurrent], map: "compass_classifications_date_current_idx")
+  @@index([classificationDate, isValidation])
+  @@map("compass_classifications")
+}
+
+model CompassValidationReport {
+  id            String   @id @default(uuid())
+  generatedAt   DateTime @default(now()) @map("generated_at")
+  overallPassed Boolean  @map("overall_passed")
+  windowResults Json     @map("window_results")
+  summary       String
+
+  @@index([generatedAt(sort: Desc)])
+  @@map("compass_validation_reports")
+}

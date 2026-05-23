@@ -1,0 +1,409 @@
+[
+  {
+    "indicatorCode": "US_GDP_QOQ",
+    "observationDate": "2026-04-30",
+    "actual": 2.0,
+    "confidence": "HIGH",
+    "indicatorName": "US Real GDP Quarter-over-Quarter (Annualized)",
+    "forecast": 2.3,
+    "previous": 0.5,
+    "notes": "Seed: Advance estimate. Annualized rate. Previous = Q4 2025 final."
+  },
+  {
+    "indicatorCode": "US_ISM_MFG",
+    "observationDate": "2026-05-01",
+    "actual": 52.7,
+    "confidence": "HIGH",
+    "indicatorName": "US ISM Manufacturing PMI",
+    "forecast": 53.0,
+    "previous": 52.7,
+    "notes": "Seed: Unchanged from March."
+  },
+  {
+    "indicatorCode": "US_ISM_SVC",
+    "observationDate": "2026-05-05",
+    "actual": 53.6,
+    "confidence": "HIGH",
+    "indicatorName": "US ISM Services PMI",
+    "forecast": 53.7,
+    "previous": 54.0,
+    "notes": "Seed: Also known as Non-Manufacturing PMI."
+  },
+  {
+    "indicatorCode": "US_RETAIL_MOM",
+    "observationDate": "2026-05-14",
+    "actual": 0.5,
+    "confidence": "HIGH",
+    "indicatorName": "US Retail Sales Month-over-Month (Headline)",
+    "forecast": 0.5,
+    "previous": 1.7,
+    "notes": "Seed: Headline incl. autos. March revised down from 1.7% to 1.6%."
+  },
+  {
+    "indicatorCode": "US_CB_CONSCONF",
+    "observationDate": "2026-04-28",
+    "actual": 92.8,
+    "confidence": "HIGH",
+    "indicatorName": "US Conference Board Consumer Confidence",
+    "forecast": 89.0,
+    "previous": 92.2,
+    "notes": "Seed: March was revised upward to 92.2."
+  },
+  {
+    "indicatorCode": "US_CPI_YOY",
+    "observationDate": "2026-05-12",
+    "actual": 3.8,
+    "confidence": "HIGH",
+    "indicatorName": "US CPI Year-over-Year (Headline)",
+    "forecast": 3.7,
+    "previous": 3.3,
+    "notes": "Seed: Highest annual rate since May 2023."
+  },
+  {
+    "indicatorCode": "US_PPI_MOM",
+    "observationDate": "2026-05-13",
+    "actual": 1.4,
+    "confidence": "HIGH",
+    "indicatorName": "US PPI Month-over-Month (Headline Final Demand)",
+    "forecast": 0.5,
+    "previous": 0.5,
+    "notes": "Seed: Largest monthly advance since March 2022. March revised up from 0.5 to 0.7."
+  },
+  {
+    "indicatorCode": "US_PCE_YOY",
+    "observationDate": "2026-04-30",
+    "actual": 3.2,
+    "confidence": "HIGH",
+    "indicatorName": "US Core PCE Price Index Year-over-Year",
+    "forecast": 3.2,
+    "previous": 3.0,
+    "notes": "Seed: Fed's preferred inflation gauge. April data not yet released."
+  },
+  {
+    "indicatorCode": "US_NFP",
+    "observationDate": "2026-05-08",
+    "actual": 115.0,
+    "confidence": "HIGH",
+    "indicatorName": "US Non-Farm Payrolls Employment Change",
+    "forecast": 62.0,
+    "previous": 178.0,
+    "notes": "Seed: March revised up from 178K to 185K. Consensus 62K (FXStreet) or 55K (Dow Jones)."
+  },
+  {
+    "indicatorCode": "US_UNEMP",
+    "observationDate": "2026-05-08",
+    "actual": 4.3,
+    "confidence": "HIGH",
+    "indicatorName": "US Unemployment Rate",
+    "forecast": 4.3,
+    "previous": 4.3,
+    "notes": "Seed: Unchanged at 4.3% for several months."
+  },
+  {
+    "indicatorCode": "US_JOBLESS_CLAIMS",
+    "observationDate": "2026-05-14",
+    "actual": 211.0,
+    "confidence": "HIGH",
+    "indicatorName": "US Initial Jobless Claims",
+    "forecast": 205.0,
+    "previous": 200.0,
+    "notes": "Seed: Prior week revised down from 200K to 199K."
+  },
+  {
+    "indicatorCode": "US_ADP",
+    "observationDate": "2026-05-06",
+    "actual": 109.0,
+    "confidence": "HIGH",
+    "indicatorName": "US ADP Non-Farm Employment Change",
+    "forecast": 84.0,
+    "previous": 62.0,
+    "notes": "Seed: Forecast varied: 84K (Dow Jones), 99K (Reuters). Largest monthly gain since Jan 2025. March revised from 62K to 61K."
+  },
+  {
+    "indicatorCode": "US_JOLTS",
+    "observationDate": "2026-05-05",
+    "actual": 6.87,
+    "confidence": "HIGH",
+    "indicatorName": "US JOLTS Job Openings",
+    "forecast": 6.84,
+    "previous": 6.92,
+    "notes": "Seed: Feb was revised up by 40K from 6.882M to 6.922M shown as previous."
+  },
+  {
+    "indicatorCode": "US_FED_RATE",
+    "observationDate": "2026-04-30",
+    "actual": 3.75,
+    "confidence": "HIGH",
+    "indicatorName": "US Federal Funds Rate (Upper Bound)",
+    "forecast": 3.75,
+    "previous": 3.75,
+    "notes": "Seed: Range 3.50-3.75%. Upper bound is 3.75%. Vote was 8-4, largest dissent since 1992."
+  },
+  {
+    "indicatorCode": "EU_GDP_QOQ",
+    "observationDate": "2026-04-30",
+    "actual": 0.1,
+    "confidence": "HIGH",
+    "indicatorName": "Eurozone GDP Quarter-over-Quarter",
+    "forecast": 0.2,
+    "previous": 0.2,
+    "notes": "Seed: Preliminary flash estimate. Reaffirmed at 0.1% in May 13 flash."
+  },
+  {
+    "indicatorCode": "EU_MFG_PMI",
+    "observationDate": "2026-05-02",
+    "actual": 52.2,
+    "confidence": "HIGH",
+    "indicatorName": "Eurozone Manufacturing PMI (HCOB / S&P Global)",
+    "forecast": 52.0,
+    "previous": 51.6,
+    "notes": "Seed: Final, revised up from Flash 52.0. Highest since May 2022."
+  },
+  {
+    "indicatorCode": "EU_SVC_PMI",
+    "observationDate": "2026-05-06",
+    "actual": 47.4,
+    "confidence": "MEDIUM",
+    "indicatorName": "Eurozone Services PMI (HCOB / S&P Global)",
+    "forecast": 47.7,
+    "previous": 50.2,
+    "notes": "Seed: Final reading. Released ~May 6. Forecast value used = flash estimate."
+  },
+  {
+    "indicatorCode": "EU_RETAIL_MOM",
+    "observationDate": "2026-05-07",
+    "actual": -0.1,
+    "confidence": "HIGH",
+    "indicatorName": "Eurozone Retail Sales Month-over-Month",
+    "forecast": -0.3,
+    "previous": -0.2,
+    "notes": "Seed: Previous February revised down from -0.2% to -0.3%."
+  },
+  {
+    "indicatorCode": "EU_CCI",
+    "observationDate": "2026-04-22",
+    "actual": -20.6,
+    "confidence": "MEDIUM",
+    "indicatorName": "Eurozone Consumer Confidence (Flash)",
+    "forecast": -17.0,
+    "previous": -16.3,
+    "notes": "Seed: Flash estimate. Lowest since Dec 2022. Forecast approximated; exact consensus not located."
+  },
+  {
+    "indicatorCode": "EU_CPI_YOY",
+    "observationDate": "2026-04-30",
+    "actual": 3.0,
+    "confidence": "HIGH",
+    "indicatorName": "Eurozone CPI Flash Year-over-Year",
+    "forecast": 2.9,
+    "previous": 2.6,
+    "notes": "Seed: Flash estimate. Highest since Sept 2023. March was 2.6% (revised up from 2.5% flash)."
+  },
+  {
+    "indicatorCode": "EU_PPI_MOM",
+    "observationDate": "2026-05-05",
+    "actual": 3.4,
+    "confidence": "MEDIUM",
+    "indicatorName": "Eurozone PPI Month-over-Month",
+    "previous": -0.6,
+    "notes": "Seed: March surge from energy. Feb was -0.6% per Eurostat (revised later to -0.7%). Exact consensus forecast not located."
+  },
+  {
+    "indicatorCode": "EU_ECB_RATE",
+    "observationDate": "2026-04-30",
+    "actual": 2.15,
+    "confidence": "HIGH",
+    "indicatorName": "ECB Main Refinancing Operations Rate",
+    "forecast": 2.15,
+    "previous": 2.15,
+    "notes": "Seed: Deposit Facility Rate is 2.00%. Held unanimously."
+  },
+  {
+    "indicatorCode": "UK_GDP_MOM",
+    "observationDate": "2026-05-14",
+    "actual": 0.3,
+    "confidence": "HIGH",
+    "indicatorName": "UK GDP Month-over-Month",
+    "forecast": -0.2,
+    "previous": 0.5,
+    "notes": "Seed: Feb revised down from +0.5% to +0.4%."
+  },
+  {
+    "indicatorCode": "UK_MFG_PMI",
+    "observationDate": "2026-05-01",
+    "actual": 53.7,
+    "confidence": "HIGH",
+    "indicatorName": "UK Manufacturing PMI (S&P Global)",
+    "forecast": 53.6,
+    "previous": 51.0,
+    "notes": "Seed: Final, revised up from Flash 53.6. Highest since May 2022."
+  },
+  {
+    "indicatorCode": "UK_SVC_PMI",
+    "observationDate": "2026-05-06",
+    "actual": 52.7,
+    "confidence": "HIGH",
+    "indicatorName": "UK Services PMI (S&P Global)",
+    "forecast": 52.0,
+    "previous": 50.5,
+    "notes": "Seed: Final, revised up from Flash 52.0."
+  },
+  {
+    "indicatorCode": "UK_RETAIL_MOM",
+    "observationDate": "2026-04-24",
+    "actual": 0.7,
+    "confidence": "HIGH",
+    "indicatorName": "UK Retail Sales Month-over-Month (incl. fuel)",
+    "forecast": 0.1,
+    "previous": -0.4,
+    "notes": "Seed: Headline incl. auto fuel. Feb revised down from -0.4% to -0.6%."
+  },
+  {
+    "indicatorCode": "UK_GFK",
+    "observationDate": "2026-04-23",
+    "actual": -25.0,
+    "confidence": "HIGH",
+    "indicatorName": "UK GfK Consumer Confidence",
+    "forecast": -24.0,
+    "previous": -21.0,
+    "notes": "Seed: Lowest since Oct 2023. Reuters poll consensus was -25; Investing.com FF forecast was -24."
+  },
+  {
+    "indicatorCode": "UK_CPI_YOY",
+    "observationDate": "2026-04-22",
+    "actual": 3.3,
+    "confidence": "MEDIUM",
+    "indicatorName": "UK CPI Year-over-Year",
+    "forecast": 3.1,
+    "previous": 3.0,
+    "notes": "Seed: Forecast 3.1% is approximate consensus; precise FF consensus not confirmed."
+  },
+  {
+    "indicatorCode": "UK_PPI_MOM",
+    "observationDate": "2026-04-22",
+    "actual": 0.9,
+    "confidence": "MEDIUM",
+    "indicatorName": "UK Output PPI Month-over-Month",
+    "notes": "Seed: Output PPI MoM. Per FF JSON the previous shown for upcoming May 20 release is 0.9% confirming March value. Forecast and previous-of-previous not located."
+  },
+  {
+    "indicatorCode": "UK_UNEMP",
+    "observationDate": "2026-04-21",
+    "actual": 4.9,
+    "confidence": "MEDIUM",
+    "indicatorName": "UK ILO Unemployment Rate",
+    "forecast": 5.0,
+    "previous": 5.2,
+    "notes": "Seed: 3-month rolling period. Prior 3-month period reading was 5.2%. Forecast approximated."
+  },
+  {
+    "indicatorCode": "UK_BOE_RATE",
+    "observationDate": "2026-04-30",
+    "actual": 3.75,
+    "confidence": "HIGH",
+    "indicatorName": "Bank of England Official Bank Rate",
+    "forecast": 3.75,
+    "previous": 3.75,
+    "notes": "Seed: Held 8-1. One member voted to hike to 4.00%."
+  },
+  {
+    "indicatorCode": "JP_GDP_QOQ",
+    "observationDate": "2026-02-16",
+    "actual": 0.1,
+    "confidence": "HIGH",
+    "indicatorName": "Japan GDP Quarter-over-Quarter (Prelim)",
+    "forecast": 0.4,
+    "previous": -0.6,
+    "notes": "Seed: First prelim. Revised to 0.3% in second prelim (March 10). Q1 2026 prelim releases May 18."
+  },
+  {
+    "indicatorCode": "JP_MFG_PMI",
+    "observationDate": "2026-05-01",
+    "actual": 55.1,
+    "confidence": "HIGH",
+    "indicatorName": "Japan Manufacturing PMI (au Jibun Bank / S&P Global)",
+    "forecast": 54.9,
+    "previous": 51.6,
+    "notes": "Seed: Final, revised up from Flash 54.9. Highest since Jan 2022."
+  },
+  {
+    "indicatorCode": "JP_SVC_PMI",
+    "observationDate": "2026-05-08",
+    "actual": 51.0,
+    "confidence": "HIGH",
+    "indicatorName": "Japan Services PMI (au Jibun Bank / S&P Global)",
+    "forecast": 51.2,
+    "previous": 53.4,
+    "notes": "Seed: Final, revised down from Flash 51.2. Lowest since May 2025."
+  },
+  {
+    "indicatorCode": "JP_RETAIL_YOY",
+    "observationDate": "2026-04-29",
+    "actual": 1.7,
+    "confidence": "HIGH",
+    "indicatorName": "Japan Retail Sales Year-over-Year",
+    "forecast": 0.8,
+    "previous": -0.2,
+    "notes": "Seed: Feb revised down from -0.2% to -0.1%."
+  },
+  {
+    "indicatorCode": "JP_CONSCONF",
+    "observationDate": "2026-04-30",
+    "actual": 32.2,
+    "confidence": "HIGH",
+    "indicatorName": "Japan Consumer Confidence",
+    "forecast": 33.1,
+    "previous": 33.3,
+    "notes": "Seed: Seasonally adjusted. Lowest since April 2025."
+  },
+  {
+    "indicatorCode": "JP_CPI_YOY",
+    "observationDate": "2026-04-17",
+    "actual": 1.8,
+    "confidence": "HIGH",
+    "indicatorName": "Japan National Core CPI Year-over-Year",
+    "forecast": 1.8,
+    "previous": 1.6,
+    "notes": "Seed: National Core CPI (ex fresh food). NOT Tokyo Core."
+  },
+  {
+    "indicatorCode": "JP_PPI_YOY",
+    "observationDate": "2026-05-14",
+    "actual": 4.9,
+    "confidence": "HIGH",
+    "indicatorName": "Japan PPI (Corporate Goods Price Index) Year-over-Year",
+    "forecast": 3.0,
+    "previous": 2.6,
+    "notes": "Seed: Fastest annual growth since May 2023 amid energy shock. March revised up from 2.6% to 2.9%."
+  },
+  {
+    "indicatorCode": "JP_HSHLD_SPEND",
+    "observationDate": "2026-05-12",
+    "actual": -2.9,
+    "confidence": "HIGH",
+    "indicatorName": "Japan Household Spending Year-over-Year",
+    "forecast": -1.3,
+    "previous": -1.8,
+    "notes": "Seed: Real terms YoY. Fourth consecutive monthly decline."
+  },
+  {
+    "indicatorCode": "JP_UNEMP",
+    "observationDate": "2026-04-27",
+    "actual": 2.7,
+    "confidence": "HIGH",
+    "indicatorName": "Japan Unemployment Rate",
+    "forecast": 2.6,
+    "previous": 2.6,
+    "notes": "Seed: Seasonally adjusted."
+  },
+  {
+    "indicatorCode": "JP_BOJ_RATE",
+    "observationDate": "2026-04-28",
+    "actual": 0.75,
+    "confidence": "HIGH",
+    "indicatorName": "Bank of Japan Policy Rate",
+    "forecast": 0.75,
+    "previous": 0.75,
+    "notes": "Seed: Held 6-3. Three dissenters wanted hike to 1.00%. Highest rate since September 1995."
+  }
+]

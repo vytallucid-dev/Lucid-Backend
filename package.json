@@ -1,0 +1,61 @@
+{
+  "name": "lucid-backend",
+  "version": "0.1.0",
+  "description": "Backend for Lucid NIFTY tool and EdgeFinder forex tool",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "postinstall": "prisma generate",
+    "start": "npx prisma migrate deploy && node dist/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "lint": "eslint . --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "prisma:seed": "tsx prisma/seed.ts",
+    "db:seed:edgefinder": "tsx prisma/seed-edgefinder.ts"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.0.0",
+    "@supabase/supabase-js": "^2.106.0",
+    "axios": "^1.7.0",
+    "axios-retry": "^4.5.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "helmet": "^8.0.0",
+    "jose": "^6.2.3",
+    "node-cron": "^3.0.3",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
+    "pino-pretty": "^11.3.0",
+    "uuid": "^11.0.0",
+    "yahoo-finance2": "^3.14.1",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.19.19",
+    "@types/node-cron": "^3.0.11",
+    "@types/supertest": "^7.2.0",
+    "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "nock": "^13.5.0",
+    "prettier": "^3.3.0",
+    "prisma": "^6.0.0",
+    "supertest": "^7.2.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
