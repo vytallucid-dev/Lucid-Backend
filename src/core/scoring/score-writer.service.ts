@@ -2,6 +2,7 @@ import { prisma } from '@core/db/prisma';
 import { logger } from '@core/utils/logger';
 import { ScoringResult } from './types';
 import { scoreIndicator } from './engine';
+import { Prisma } from '@prisma/client';
 
 export interface ComputeAndStoreParams {
   indicatorCode: string;
@@ -109,7 +110,7 @@ export async function computeAndStoreScore(
       const refreshed = await prisma.score.update({
         where: { id: existing.id },
         data: {
-          computationMetadata: metadata as Record<string, unknown>,
+          computationMetadata: metadata as Prisma.InputJsonObject,
           computedAt: new Date(),
         },
       });
@@ -132,7 +133,7 @@ export async function computeAndStoreScore(
       data: {
         score,
         flag: flagStr,
-        computationMetadata: metadata as Record<string, unknown>,
+        computationMetadata: metadata as Prisma.InputJsonObject,
         computedAt: new Date(),
       },
     });
@@ -145,7 +146,7 @@ export async function computeAndStoreScore(
         flag: flagStr,
         ruleVersionId: rule.id,
         dataPointId: finalDataPointId,
-        computationMetadata: metadata as Record<string, unknown>,
+        computationMetadata: metadata as Prisma.InputJsonObject,
       },
     });
   }

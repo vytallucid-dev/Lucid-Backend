@@ -3,6 +3,7 @@ import { logger } from '@core/utils/logger';
 import { dataPointsRepository } from '@core/repositories/data-points.repository';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import { getLatestUsdBaseFundamentals } from '@modules/edgefinder/services/scorecard/scorecard-export.service';
+import { Prisma } from '@prisma/client';
 
 const JOB_NAME = 'nifty_ind9_bridge';
 const IND9_CODE = 'IND_NIFTY_09_USD_WEAKNESS';
@@ -104,7 +105,7 @@ export async function runInd9Bridge(
       observationDate: today,
       value: usdData.baseFundamentalsScore,
       source: 'derived',
-      sourceMetadata,
+      sourceMetadata: sourceMetadata as Prisma.InputJsonObject,
     });
 
     await dataFetchLogRepository.complete({

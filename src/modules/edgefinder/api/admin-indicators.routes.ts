@@ -163,7 +163,7 @@ adminIndicatorsRouter.get(
       const limit = typeof parsed.data.limit === 'number' ? parsed.data.limit : parseInt(parsed.data.limit as string, 10);
 
       const indicator = await prisma.indicator.findUnique({
-        where: { code },
+        where: { code: code as string },
         select: { id: true, code: true, name: true, unit: true, frequency: true, dataSource: true, compositeGroup: true, country: true, uiGroup: true },
       });
       if (!indicator) {
@@ -243,7 +243,7 @@ adminIndicatorsRouter.get(
       const code = req.params.code;
 
       const indicator = await prisma.indicator.findUnique({
-        where: { code },
+        where: { code: code as string },
         select: { id: true, code: true, name: true, dataSource: true, country: true, frequency: true },
       });
       if (!indicator) {
@@ -344,7 +344,7 @@ adminIndicatorsRouter.get(
       const code = req.params.code;
 
       const indicator = await prisma.indicator.findUnique({
-        where: { code },
+        where: { code: code as string },
         include: {
           scoringRules: {
             orderBy: { version: 'desc' },

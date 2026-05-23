@@ -24,7 +24,7 @@ scoringRouter.post(
       if (!parsed.success) {
         throw new AppError(400, 'Invalid body', 'VALIDATION_ERROR', parsed.error.flatten());
       }
-      const indicatorCode = req.params.indicatorCode;
+      const indicatorCode = req.params.indicatorCode as string;
       if (!indicatorCode) {
         throw new AppError(400, 'Missing indicatorCode param', 'VALIDATION_ERROR');
       }

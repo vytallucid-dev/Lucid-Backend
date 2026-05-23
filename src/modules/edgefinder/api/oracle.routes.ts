@@ -327,7 +327,8 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
         outcome: 'deferred',
         reason: 'Scoring deferred pending backtesting. Activation planned post-v1.',
       };
-      return res.json({ success: true, data: deferred });
+      res.json({ success: true, data: deferred });
+      return;
     }
 
     const assetRecord = await prisma.asset.findFirst({ where: { code: dbCode } });
@@ -357,7 +358,8 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
         outcome: 'insufficient_data',
         reason: 'Scorecard not yet computed for this asset',
       };
-      return res.json({ success: true, data: noData });
+      res.json({ success: true, data: noData });
+      return;
     }
 
     const breakdown = parseArray<IndicatorBreakdownEntry>(scorecard.indicatorBreakdown);
@@ -857,7 +859,7 @@ async function buildFxPairData(
     buildFxCotSide(pairMeta.quote),
   ]);
 
-  const indById = new Map(indicatorRecords.map((i) => [i.id, i]));
+  // const indById = new Map(indicatorRecords.map((i) => [i.id, i]));
   const indByCode = new Map(indicatorRecords.map((i) => [i.code, i]));
   const dpByIndicatorId = new Map<string, (typeof dataPointRows)[0]>();
   for (const dp of dataPointRows) {
