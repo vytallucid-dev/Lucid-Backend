@@ -21,7 +21,6 @@
     "noUnusedParameters": true,
     "moduleResolution": "bundler",
     "types": ["node"],
-    "ignoreDeprecations": "6.0",
     "baseUrl": "./src",
     "paths": {
       "@core/*": ["core/*"],
