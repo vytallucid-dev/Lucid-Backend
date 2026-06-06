@@ -68,11 +68,13 @@ describe('Override 2 — Gold inflation hedge', () => {
     expect(r.overridesFired[0].code).toBe('OVERRIDE_2_GOLD_INFLATION_HEDGE');
   });
 
-  it('XAUUSD + Risk-Off + CPI +1 → no adjustment', () => {
+  it('XAUUSD + Risk-Off + CPI +1 → -2 adjustment, override 2 fires (USD CPI miss = deflation, Gold unwinds)', () => {
     const r = computeCompassOverridesForAsset('XAUUSD', 'Risk-Off', [
       ind('US_CPI_YOY', 1, 'Inflation'),
     ]);
-    expect(r.totalAdjustment).toBe(0);
+    expect(r.totalAdjustment).toBe(-2);
+    expect(r.overridesFired).toHaveLength(1);
+    expect(r.overridesFired[0].code).toBe('OVERRIDE_2_GOLD_INFLATION_HEDGE');
   });
 
   it('XAUUSD + Risk-Off + GDP -1 → no adjustment (growth not flipped by override 2)', () => {

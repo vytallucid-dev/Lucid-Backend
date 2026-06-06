@@ -2,7 +2,7 @@ import { CompositionFlag } from './types';
 
 // Cluster definitions per v2.0 spec Section 3.4
 // Maps to EdgeFinder indicator codes (US_*)
-export const INFLATION_CLUSTER_CODES = ['US_CPI_YOY', 'US_PPI_MOM', 'US_PCE_YOY'];
+export const INFLATION_CLUSTER_CODES = ['US_CPI_YOY', 'US_PPI_YOY', 'US_PCE_YOY'];
 export const GROWTH_CLUSTER_CODES = ['US_GDP_QOQ', 'US_ISM_MFG', 'US_ISM_SVC', 'US_RETAIL_MOM'];
 export const LABOR_CLUSTER_CODES = [
   'US_NFP',

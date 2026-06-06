@@ -9,8 +9,9 @@ export interface ResolvedIndicator {
   category: IndicatorCategory;
   isCot: boolean;
   /**
-   * For Gold (XAUUSD), all non-COT US indicators except US_JOBLESS_CLAIMS
-   * have their score sign flipped by the scorecard assembly layer.
+   * For Gold (XAUUSD), all non-COT US indicators have their score sign
+   * flipped by the scorecard assembly layer — a 100% strict USD inverse
+   * with no per-indicator exceptions.
    */
   flipScoreForGold: boolean;
 }
@@ -28,8 +29,6 @@ const COUNTRY_BY_ASSET: Record<string, { fundamental: string[]; cot: string }> =
   JPY: { fundamental: ['JP'], cot: 'JPY' },
   XAUUSD: { fundamental: ['US'], cot: 'XAU' },
 };
-
-const GOLD_NON_FLIPPED_CODE = 'US_JOBLESS_CLAIMS';
 
 function uiGroupToCategory(uiGroup: string | null): IndicatorCategory {
   switch (uiGroup) {
@@ -91,8 +90,7 @@ export async function resolveAssetIndicators(
       uiGroup: ind.uiGroup ?? 'Other',
       category: uiGroupToCategory(ind.uiGroup),
       isCot,
-      flipScoreForGold:
-        assetCode === 'XAUUSD' && !isCot && ind.code !== GOLD_NON_FLIPPED_CODE,
+      flipScoreForGold: assetCode === 'XAUUSD' && !isCot,
     };
   });
 

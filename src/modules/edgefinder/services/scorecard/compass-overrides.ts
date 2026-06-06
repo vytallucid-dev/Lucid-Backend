@@ -59,12 +59,15 @@ export function computeCompassOverridesForAsset(
     const affected: string[] = [];
     let adj = 0;
     for (const ind of indicatorScores) {
-      if (GOLD_INFLATION_FLIP_CODES.has(ind.indicatorCode) && ind.baseScore === -1) {
-        adj += 2;
+      if (GOLD_INFLATION_FLIP_CODES.has(ind.indicatorCode) && ind.baseScore !== 0) {
+        // ind.baseScore is the already-flipped Gold value = -rawUsdScore.
+        // Target score = rawUsdScore = -ind.baseScore.
+        // Required adjustment = target - current = -ind.baseScore - ind.baseScore = -2 * ind.baseScore.
+        adj += -2 * ind.baseScore;
         affected.push(ind.indicatorCode);
       }
     }
-    if (adj > 0) {
+    if (affected.length > 0) {
       overridesFired.push({
         code: 'OVERRIDE_2_GOLD_INFLATION_HEDGE',
         adjustment: adj,

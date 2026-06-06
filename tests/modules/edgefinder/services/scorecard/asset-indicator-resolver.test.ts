@@ -103,7 +103,7 @@ describe('resolveAssetIndicators', () => {
     expect(codes).toEqual(['EUR_COT', 'EU_GDP_QOQ']);
   });
 
-  it('XAUUSD → US fundamentals (flipped) + XAUUSD_COT (not flipped) + jobless claims (not flipped)', async () => {
+  it('XAUUSD → US fundamentals all flipped + XAUUSD_COT not flipped (no per-indicator exceptions)', async () => {
     seedDefaultAssets();
     seedDefaultIndicators();
     const r = await resolveAssetIndicators('XAUUSD');
@@ -118,7 +118,7 @@ describe('resolveAssetIndicators', () => {
     expect(r.indicators.find((i) => i.indicatorCode === 'US_CPI_YOY')?.flipScoreForGold).toBe(true);
     expect(r.indicators.find((i) => i.indicatorCode === 'US_GDP_QOQ')?.flipScoreForGold).toBe(true);
     expect(r.indicators.find((i) => i.indicatorCode === 'US_FED_RATE')?.flipScoreForGold).toBe(true);
-    expect(r.indicators.find((i) => i.indicatorCode === 'US_JOBLESS_CLAIMS')?.flipScoreForGold).toBe(false);
+    expect(r.indicators.find((i) => i.indicatorCode === 'US_JOBLESS_CLAIMS')?.flipScoreForGold).toBe(true);
     expect(r.indicators.find((i) => i.indicatorCode === 'XAUUSD_COT')?.flipScoreForGold).toBe(false);
     expect(r.indicators.find((i) => i.indicatorCode === 'XAUUSD_COT')?.isCot).toBe(true);
   });

@@ -7,9 +7,11 @@
  * `base_indicator_score − quote_indicator_score` per row, optionally with
  * per-currency inversion and per-pair inclusion rules.
  *
- * TODO: Migrate to PairTemplateRow DB table once `inverted` and
- * `requires_currency` columns are added. See Phase 5 decision log.
+ * The canonical source of truth is now the `pair_template_rows` DB table
+ * (seeded via seed-edgefinder.ts). Use `loadPairTemplateFromDb()` at runtime
+ * instead of the static `PAIR_TEMPLATE` array.
  */
+import { prisma } from '@core/db/prisma';
 
 export type Currency = 'USD' | 'EUR' | 'GBP' | 'JPY';
 
@@ -135,4 +137,51 @@ export const PAIR_DEFINITIONS: ReadonlyArray<PairDefinition> = [
 
 export function getPairDefinition(pairCode: string): PairDefinition | null {
   return PAIR_DEFINITIONS.find((p) => p.code === pairCode) ?? null;
+}
+
+// ─── DB-driven template loading ───────────────────────────────────────────────
+
+function dbRowToPairRowConfig(row: {
+  displayName: string;
+  uiGroup: string;
+  treatment: string;
+  usIndicatorCode: string | null;
+  eurIndicatorCode: string | null;
+  gbpIndicatorCode: string | null;
+  jpyIndicatorCode: string | null;
+}): PairRowConfig {
+  const indicators: Partial<Record<Currency, string>> = {};
+  if (row.usIndicatorCode) indicators.USD = row.usIndicatorCode;
+  if (row.eurIndicatorCode) indicators.EUR = row.eurIndicatorCode;
+  if (row.gbpIndicatorCode) indicators.GBP = row.gbpIndicatorCode;
+  if (row.jpyIndicatorCode) indicators.JPY = row.jpyIndicatorCode;
+
+  let requiresCurrency: Currency[] | undefined;
+  if (row.treatment === 'USD_ONLY') requiresCurrency = ['USD'];
+  else if (row.treatment === 'JPY_ONLY') requiresCurrency = ['JPY'];
+  // BILATERAL and RATES_BILATERAL have no requiresCurrency constraint.
+
+  return {
+    rowName: row.displayName,
+    uiGroup: row.uiGroup as PairRowUiGroup,
+    indicators,
+    requiresCurrency,
+    // No `inverted` field: PPI is correctly BILATERAL in the DB (no EUR inversion).
+  };
+}
+
+/**
+ * Load active pair-template rows from the database ordered by rowOrder.
+ *
+ * This is the canonical runtime replacement for the static PAIR_TEMPLATE array.
+ * The DB is the single source of truth for indicator codes and treatment rules,
+ * so any seed change (e.g. fixing PPI to BILATERAL) is automatically picked up
+ * without redeploying application code.
+ */
+export async function loadPairTemplateFromDb(): Promise<PairRowConfig[]> {
+  const rows = await prisma.pairTemplateRow.findMany({
+    where: { isActive: true },
+    orderBy: { rowOrder: 'asc' },
+  });
+  return rows.map(dbRowToPairRowConfig);
 }

@@ -68,21 +68,23 @@ describe('ForexFactoryClient', () => {
     }
   });
 
-  it('falls back to CDN when primary returns HTML rate-limit response', async () => {
+  it('throws FF_RATE_LIMITED when primary returns HTML (CDN fallback removed)', async () => {
     nock(PRIMARY_HOST)
       .get(PATH)
       .reply(200, '<html>Rate limit</html>', {
         'content-type': 'text/html; charset=utf-8',
       });
-    nock(FALLBACK_HOST)
-      .get(PATH)
-      .reply(200, JSON.stringify(SAMPLE_EVENTS), {
-        'content-type': 'application/json',
-      });
+    // No CDN nock — fallback was intentionally removed from the client.
 
-    const result = await forexFactoryClient.getCalendarWeek();
-    expect(result.events).toHaveLength(1);
-    expect(result.requestUrl).toBe(`${FALLBACK_HOST}${PATH}`);
+    try {
+      await forexFactoryClient.getCalendarWeek();
+      expect.fail('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(AppError);
+      const appErr = err as AppError;
+      expect(appErr.statusCode).toBe(429);
+      expect(appErr.code).toBe('FF_RATE_LIMITED');
+    }
   });
 
   it('throws FF_UPSTREAM_ERROR on 500 after retries', async () => {

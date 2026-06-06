@@ -5,7 +5,7 @@ type Stance = 'CUTTING' | 'NEUTRAL' | 'HIKING';
 type Direction = 'BEAT' | 'MET' | 'MISS';
 
 const STANCE_MATRIX: Record<Stance, Record<Direction, Score>> = {
-  CUTTING: { BEAT: 1, MET: 1, MISS: -1 },
+  CUTTING: { BEAT: 1, MET: 0, MISS: -1 },
   NEUTRAL: { BEAT: 1, MET: 0, MISS: -1 },
   HIKING: { BEAT: 1, MET: 1, MISS: 0 },
 };

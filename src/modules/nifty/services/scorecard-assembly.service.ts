@@ -267,6 +267,21 @@ async function persistScorecard(
     );
     const compositionIdentical = existing.compositionFlag === payload.compositionFlag;
 
+    const breakdownIdentical = (() => {
+      const prev = (existing.indicatorBreakdown ?? {}) as Record<string, unknown>;
+      const next = payload.indicatorBreakdown;
+      const allCodes = new Set([...Object.keys(prev), ...Object.keys(next)]);
+      for (const code of allCodes) {
+        const p = prev[code] as IndicatorBreakdownEntry | undefined;
+        const n = next[code];
+        if (!p || !n) return false;
+        if (p.score !== n.score) return false;
+        if (p.outcome !== n.outcome) return false;
+        if (JSON.stringify(p.flags ?? []) !== JSON.stringify(n.flags ?? [])) return false;
+      }
+      return true;
+    })();
+
     const identical =
       existing.netScore === payload.netScore &&
       existing.domesticScore === payload.domesticScore &&
@@ -276,7 +291,8 @@ async function persistScorecard(
       existing.ind9RawComposite === payload.ind9RawComposite &&
       velocityIdentical &&
       peakStateIdentical &&
-      compositionIdentical;
+      compositionIdentical &&
+      breakdownIdentical;
 
     if (identical) {
       return { scorecardId: existing.id, outcome: 'skipped' };

@@ -8,18 +8,14 @@ import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.reposi
 import { parseParticipantOiCsv } from './nse-participant-oi.parser';
 
 const INDICATOR_CODE = 'IND_NIFTY_13_FII_LS_RATIO';
-const REQUEST_DELAY_MS = 1500;
-const MAX_BACKFILL_DAYS = 365;
 
-export type ScrapeMode = 'today' | 'single_date' | 'backfill';
+export type ScrapeMode = 'today' | 'single_date';
 export type PerDateOutcome = 'inserted' | 'revised' | 'skipped' | 'no_data' | 'failed';
 
 export interface ScrapeNseParticipantOiParams {
-  triggerType: 'cron' | 'manual' | 'backfill';
+  triggerType: 'cron' | 'manual';
   triggeredBy?: string | null;
   observationDate?: Date; // single specific date
-  dateFrom?: Date; // backfill range start (inclusive)
-  dateTo?: Date; // backfill range end (inclusive)
 }
 
 export interface PerDateResult {
@@ -64,20 +60,7 @@ function todayInIstAsUtcMidnight(): Date {
   return new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()));
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function* dateRange(from: Date, to: Date): Generator<Date> {
-  const cursor = new Date(from);
-  while (cursor.getTime() <= to.getTime()) {
-    yield new Date(cursor);
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-}
-
-function determineMode(observationDate?: Date, dateFrom?: Date, dateTo?: Date): ScrapeMode {
-  if (dateFrom && dateTo) return 'backfill';
+function determineMode(observationDate?: Date): ScrapeMode {
   if (observationDate) return 'single_date';
   return 'today';
 }
@@ -174,43 +157,17 @@ export async function scrapeNseParticipantOi(
   params: ScrapeNseParticipantOiParams,
 ): Promise<ScrapeNseParticipantOiResult> {
   const ind = await loadIndicator();
-  const mode = determineMode(params.observationDate, params.dateFrom, params.dateTo);
+  const mode = determineMode(params.observationDate);
 
-  // Resolve the date range
-  let firstDate: Date;
-  let lastDate: Date;
-  if (mode === 'backfill') {
-    firstDate = params.dateFrom as Date;
-    lastDate = params.dateTo as Date;
-
-    if (firstDate.getTime() > lastDate.getTime()) {
-      throw new AppError(400, 'date_from must be <= date_to', 'INVALID_DATE_RANGE');
-    }
-
-    const rangeDays =
-      Math.floor((lastDate.getTime() - firstDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-    if (rangeDays > MAX_BACKFILL_DAYS) {
-      throw new AppError(
-        400,
-        `Backfill range ${rangeDays} days exceeds max ${MAX_BACKFILL_DAYS}`,
-        'BACKFILL_RANGE_TOO_LARGE',
-        { rangeDays, max: MAX_BACKFILL_DAYS },
-      );
-    }
-  } else if (mode === 'single_date') {
-    firstDate = params.observationDate as Date;
-    lastDate = params.observationDate as Date;
-  } else {
-    firstDate = todayInIstAsUtcMidnight();
-    lastDate = firstDate;
-  }
+  const targetDate =
+    mode === 'single_date' ? (params.observationDate as Date) : todayInIstAsUtcMidnight();
 
   const log = await dataFetchLogRepository.start({
     jobName: 'scrape_nse_participant_oi',
     triggerType: params.triggerType,
     triggeredBy: params.triggeredBy ?? null,
-    targetDateFrom: firstDate,
-    targetDateTo: lastDate,
+    targetDateFrom: targetDate,
+    targetDateTo: targetDate,
     metadata: {
       indicatorCode: INDICATOR_CODE,
       mode,
@@ -220,17 +177,8 @@ export async function scrapeNseParticipantOi(
   const details: PerDateResult[] = [];
 
   try {
-    let firstIter = true;
-    for (const date of dateRange(firstDate, lastDate)) {
-      // Rate limit between requests (skip the delay on the very first iteration)
-      if (!firstIter) {
-        await sleep(REQUEST_DELAY_MS);
-      }
-      firstIter = false;
-
-      const result = await fetchAndStoreOne(ind, date, log.id);
-      details.push(result);
-    }
+    const result = await fetchAndStoreOne(ind, targetDate, log.id);
+    details.push(result);
 
     const summary = {
       totalDatesAttempted: details.length,
@@ -266,8 +214,8 @@ export async function scrapeNseParticipantOi(
       logId: log.id,
       status,
       mode,
-      dateFrom: toIsoDate(firstDate),
-      dateTo: toIsoDate(lastDate),
+      dateFrom: toIsoDate(targetDate),
+      dateTo: toIsoDate(targetDate),
       summary,
       details,
     };
@@ -288,8 +236,8 @@ export async function scrapeNseParticipantOi(
       logId: log.id,
       status: 'failed',
       mode,
-      dateFrom: toIsoDate(firstDate),
-      dateTo: toIsoDate(lastDate),
+      dateFrom: toIsoDate(targetDate),
+      dateTo: toIsoDate(targetDate),
       summary: {
         totalDatesAttempted: details.length,
         inserted: 0,

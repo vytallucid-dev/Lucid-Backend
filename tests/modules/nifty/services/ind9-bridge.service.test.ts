@@ -42,7 +42,20 @@ const YESTERDAY = new Date(Date.UTC(2026, 4, 18));
 const USD_EXPORT_TODAY = {
   observationDate: TODAY,
   baseFundamentalsScore: -5,
-  indicatorBreakdown: { GDP: 1, CPI: -1 },
+  indicatorBreakdown: {
+    US_GDP_QOQ: 1,
+    US_CPI_YOY: -1,
+    US_NFP: 1,
+    US_UNEMP: 1,
+    US_ISM_MFG: -1,
+    US_ISM_SVC: -1,
+    US_RETAIL_MOM: 1,
+    US_CB_CONSCONF: -1,
+    US_PCE_YOY: -1,
+    US_JOBLESS_CLAIMS: 1,
+    US_JOLTS: -1,
+    US_FED_RATE: 1,
+  },
   isToday: true,
 };
 
@@ -126,7 +139,7 @@ describe('runInd9Bridge', () => {
     const meta = upsertCall.sourceMetadata;
     expect(meta).toHaveProperty('usdScorecardDate', '2026-05-19');
     expect(meta).toHaveProperty('isStaleScorecard', false);
-    expect(meta).toHaveProperty('indicatorBreakdown', { GDP: 1, CPI: -1 });
+    expect(meta).toHaveProperty('indicatorBreakdown', USD_EXPORT_TODAY.indicatorBreakdown);
     expect(meta).toHaveProperty('bridgeVersion', 'v1');
     expect(meta).not.toHaveProperty('rawSumOf14');
     expect(meta).not.toHaveProperty('thresholdApplied');

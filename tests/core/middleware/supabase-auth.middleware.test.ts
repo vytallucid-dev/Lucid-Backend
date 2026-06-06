@@ -13,6 +13,16 @@ vi.mock('@config/env', () => ({
   },
 }));
 
+const { prismaMock } = vi.hoisted(() => ({
+  prismaMock: {
+    user: { findUnique: vi.fn() },
+  },
+}));
+
+vi.mock('@core/db/prisma', () => ({
+  prisma: prismaMock,
+}));
+
 const jwtVerifyMock = vi.fn();
 
 vi.mock('jose', async () => {
@@ -154,6 +164,7 @@ describe('requireAuth', () => {
 
 describe('requireRole', () => {
   it('passes when user has matching role', async () => {
+    prismaMock.user.findUnique.mockResolvedValue({ role: 'admin' });
     const admin: SupabaseJwtPayload = {
       sub: 'u1',
       email: 'a@b.com',
@@ -165,6 +176,7 @@ describe('requireRole', () => {
   });
 
   it('returns 403 when user has wrong role', async () => {
+    prismaMock.user.findUnique.mockResolvedValue({ role: 'user' });
     const user: SupabaseJwtPayload = {
       sub: 'u1',
       email: 'a@b.com',
@@ -177,6 +189,7 @@ describe('requireRole', () => {
   });
 
   it('returns 403 when app_metadata.role is undefined', async () => {
+    prismaMock.user.findUnique.mockResolvedValue(null);
     const user: SupabaseJwtPayload = {
       sub: 'u1',
       email: 'a@b.com',

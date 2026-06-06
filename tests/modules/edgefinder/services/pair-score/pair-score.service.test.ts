@@ -4,6 +4,8 @@ const { prismaMock } = vi.hoisted(() => ({
   prismaMock: {
     asset: { findUnique: vi.fn() },
     cotData: { findFirst: vi.fn() },
+    pairTemplateRow: { findMany: vi.fn() },
+    edgefinderScorecard: { findFirst: vi.fn() },
   },
 }));
 
@@ -39,6 +41,25 @@ const mockedRegime =
   compassClassificationsRepository.getRegimeAsOf as unknown as ReturnType<typeof vi.fn>;
 
 const DATE = new Date(Date.UTC(2026, 4, 19));
+
+// Mirrors the 15 active rows seeded into pair_template_rows (PPI is BILATERAL — no EUR inversion).
+const MOCK_TEMPLATE_ROWS = [
+  { displayName: 'GDP', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 1, isActive: true, usIndicatorCode: 'US_GDP_QOQ', eurIndicatorCode: 'EU_GDP_QOQ', gbpIndicatorCode: 'UK_GDP_MOM', jpyIndicatorCode: 'JP_GDP_QOQ' },
+  { displayName: 'Manufacturing PMI', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 2, isActive: true, usIndicatorCode: 'US_ISM_MFG', eurIndicatorCode: 'EU_MFG_PMI', gbpIndicatorCode: 'UK_MFG_PMI', jpyIndicatorCode: 'JP_MFG_PMI' },
+  { displayName: 'Services PMI', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 3, isActive: true, usIndicatorCode: 'US_ISM_SVC', eurIndicatorCode: 'EU_SVC_PMI', gbpIndicatorCode: 'UK_SVC_PMI', jpyIndicatorCode: 'JP_SVC_PMI' },
+  { displayName: 'Retail Sales', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 4, isActive: true, usIndicatorCode: 'US_RETAIL_MOM', eurIndicatorCode: 'EU_RETAIL_MOM', gbpIndicatorCode: 'UK_RETAIL_MOM', jpyIndicatorCode: 'JP_RETAIL_YOY' },
+  { displayName: 'Consumer Confidence', uiGroup: 'Sentiment', treatment: 'BILATERAL', rowOrder: 5, isActive: true, usIndicatorCode: 'US_CB_CONSCONF', eurIndicatorCode: 'EU_CCI', gbpIndicatorCode: 'UK_GFK', jpyIndicatorCode: 'JP_CONSCONF' },
+  { displayName: 'CPI', uiGroup: 'Inflation', treatment: 'BILATERAL', rowOrder: 6, isActive: true, usIndicatorCode: 'US_CPI_YOY', eurIndicatorCode: 'EU_CPI_YOY', gbpIndicatorCode: 'UK_CPI_YOY', jpyIndicatorCode: 'JP_CPI_YOY' },
+  { displayName: 'PPI', uiGroup: 'Inflation', treatment: 'BILATERAL', rowOrder: 7, isActive: true, usIndicatorCode: 'US_PPI_MOM', eurIndicatorCode: 'EU_PPI_MOM', gbpIndicatorCode: 'UK_PPI_MOM', jpyIndicatorCode: 'JP_PPI_YOY' },
+  { displayName: 'PCE', uiGroup: 'Inflation', treatment: 'USD_ONLY', rowOrder: 8, isActive: true, usIndicatorCode: 'US_PCE_YOY', eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: null },
+  { displayName: 'Household Spending', uiGroup: 'Inflation', treatment: 'JPY_ONLY', rowOrder: 9, isActive: true, usIndicatorCode: null, eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: 'JP_HSHLD_SPEND' },
+  { displayName: 'NFP / Employment', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 10, isActive: true, usIndicatorCode: 'US_NFP', eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: null },
+  { displayName: 'Unemployment', uiGroup: 'Jobs', treatment: 'BILATERAL', rowOrder: 11, isActive: true, usIndicatorCode: 'US_UNEMP', eurIndicatorCode: 'EU_UNEMP', gbpIndicatorCode: 'UK_UNEMP', jpyIndicatorCode: 'JP_UNEMP' },
+  { displayName: 'Jobless Claims', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 12, isActive: true, usIndicatorCode: 'US_JOBLESS_CLAIMS', eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: null },
+  { displayName: 'JOLTS', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 13, isActive: true, usIndicatorCode: 'US_JOLTS', eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: null },
+  { displayName: 'ADP', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 14, isActive: true, usIndicatorCode: 'US_ADP', eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: null },
+  { displayName: 'Interest Rate', uiGroup: 'Rates', treatment: 'RATES_BILATERAL', rowOrder: 15, isActive: true, usIndicatorCode: 'US_FED_RATE', eurIndicatorCode: 'EU_ECB_RATE', gbpIndicatorCode: 'UK_BOE_RATE', jpyIndicatorCode: 'JP_BOJ_RATE' },
+];
 
 function scored(score: number, direction: string | null = null) {
   return {
@@ -112,10 +133,12 @@ beforeEach(() => {
       if (candidates.length === 0) return null;
       return {
         ...candidates[0],
-        weeklyChangePct: candidates[0].weeklyChangePct, // mocked Decimal-coercible
+        weeklyChangePct: candidates[0].weeklyChangePct,
       };
     },
   );
+  prismaMock.pairTemplateRow.findMany.mockResolvedValue(MOCK_TEMPLATE_ROWS);
+  prismaMock.edgefinderScorecard.findFirst.mockResolvedValue(null);
   setupScoreMap({});
 });
 
@@ -142,10 +165,10 @@ describe('assemblePairScore — EURUSD bilateral assembly', () => {
     expect(r.basePairScore).toBe(-2);
   });
 
-  it('PPI inversion: EUR PPI +1 (inverted to -1) vs USD PPI +1 → -2', async () => {
+  it('PPI bilateral (no inversion): EUR PPI +1 vs USD PPI +1 → pair score 0', async () => {
     setupScoreMap({ EU_PPI_MOM: 1, US_PPI_MOM: 1 });
     const r = await assemblePairScore('EURUSD', DATE);
-    expect(r.basePairScore).toBe(-2);
+    expect(r.basePairScore).toBe(0);
   });
 });
 
@@ -308,7 +331,8 @@ describe('assemblePairScore — persistence', () => {
       rowIncluded: boolean;
       pairScore: number;
     }>;
-    expect(rows).toHaveLength(15);
+    // 15 template rows + 1 COT row appended by buildCotPairRow.
+    expect(rows).toHaveLength(16);
     const ppi = rows.find((r) => r.rowName === 'PPI');
     expect(ppi?.rowIncluded).toBe(true); // PPI stays in template in GBPUSD
     expect(ppi?.pairScore).toBe(0); // forced 0 since no EUR

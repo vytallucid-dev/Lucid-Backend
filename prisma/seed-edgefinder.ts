@@ -79,7 +79,6 @@ const ASSETS: AssetSeed[] = [
     isActive: true,
     metadata: {
       rate_row_source: 'FED_ONLY',
-      jobless_claims_exception: true,
       cotContractCode: '088691',
       cotTraderCategory: 'Non-Commercials',
     },
@@ -711,6 +710,7 @@ function ruleForIndicator(code: string): ScoringRuleSeed {
     'US_JOBLESS_CLAIMS',
   ]);
   const cpiRateCycle: Record<string, string> = {
+    US_CPI_YOY: 'USD',
     EU_CPI_YOY: 'EUR',
     UK_CPI_YOY: 'GBP',
     JP_CPI_YOY: 'JPY',
@@ -740,16 +740,6 @@ function ruleForIndicator(code: string): ScoringRuleSeed {
     return {
       ruleType: 'cpi_rate_cycle',
       ruleDefinition: { type: 'cpi_rate_cycle', currency_code: cpiRateCycle[code] },
-    };
-  }
-  if (code === 'US_CPI_YOY') {
-    return {
-      ruleType: 'normal',
-      ruleDefinition: {
-        type: 'normal',
-        forecast_tolerance_pct: 0.05,
-        notes: 'USD currently neutral stance',
-      },
     };
   }
   if (code === 'US_02Y_SMA') {

@@ -185,8 +185,12 @@ async function resolveIndicators(
     const currentValue = currentDp ? Number(currentDp.value) : null;
     const priorValue = priorDp ? Number(priorDp.value) : null;
 
-    const formattedValue = formatIndicatorValue(ind.code, currentValue);
-    const magnitudeText = formatMagnitude(ind.code, currentValue, priorValue);
+    const isCarryForward = breakdownEntry?.outcome === 'carry_forward';
+
+    // For carry-forward entries, suppress value/magnitude so the same number
+    // doesn't appear across consecutive dates without fresh data.
+    const formattedValue = isCarryForward ? '' : formatIndicatorValue(ind.code, currentValue);
+    const magnitudeText = isCarryForward ? '' : formatMagnitude(ind.code, currentValue, priorValue);
     const score = breakdownEntry?.score ?? null;
     const lastChangeDate = currentDp ? toIsoDate(currentDp.observation_date) : '';
 

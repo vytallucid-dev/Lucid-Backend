@@ -24,6 +24,8 @@ export async function rollingPctDirectionHandler(
     tiers: Tier[];
   };
 
+  const needed = rule.lookback_trading_days + 1;
+
   const points = await prisma.dataPoint.findMany({
     where: {
       indicatorId: ctx.indicatorId,
@@ -31,13 +33,13 @@ export async function rollingPctDirectionHandler(
       observationDate: { lte: ctx.observationDate },
     },
     orderBy: { observationDate: 'desc' },
-    take: rule.lookback_trading_days,
+    take: needed,
   });
 
-  if (points.length < rule.lookback_trading_days) {
+  if (points.length < needed) {
     return {
       kind: 'insufficient_data',
-      reason: `Need ${rule.lookback_trading_days} points; have ${points.length}`,
+      reason: `Need ${needed} points for ${rule.lookback_trading_days}-day pct change; have ${points.length}`,
     };
   }
 

@@ -5,6 +5,7 @@ interface Band {
   min: number | null;
   max: number | null;
   score: Score;
+  flag?: string;
 }
 
 export async function thresholdBandsHandler(ctx: ScoringContext): Promise<ScoringResult> {
@@ -43,7 +44,7 @@ export async function thresholdBandsHandler(ctx: ScoringContext): Promise<Scorin
       return {
         kind: 'scored',
         score: band.score,
-        flags: [],
+        flags: band.flag ? [band.flag] : [],
         metadata: {
           value,
           band: { min: band.min, max: band.max },

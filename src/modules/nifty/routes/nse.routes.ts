@@ -53,28 +53,12 @@ nseRouter.post(
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD');
 
-// Three modes: empty body = today; observation_date = single; date_from+date_to = range.
-// Mutually exclusive: cannot mix observation_date with date_from/date_to.
+// Two modes: empty body = today; observation_date = single date.
 const participantOiSchema = z
   .object({
     observation_date: isoDate.optional(),
-    date_from: isoDate.optional(),
-    date_to: isoDate.optional(),
   })
-  .strict()
-  .refine(
-    (data) => {
-      const hasSingle = !!data.observation_date;
-      const hasRange = !!data.date_from || !!data.date_to;
-      if (hasSingle && hasRange) return false;
-      if (hasRange && (!data.date_from || !data.date_to)) return false;
-      return true;
-    },
-    {
-      message:
-        'Invalid combination. Provide either observation_date OR (date_from AND date_to), or neither (defaults to today).',
-    },
-  );
+  .strict();
 
 nseRouter.post(
   '/scrape-nse-participant-oi/run',
@@ -91,19 +75,11 @@ nseRouter.post(
       const observationDate = data.observation_date
         ? new Date(`${data.observation_date}T00:00:00.000Z`)
         : undefined;
-      const dateFrom = data.date_from
-        ? new Date(`${data.date_from}T00:00:00.000Z`)
-        : undefined;
-      const dateTo = data.date_to ? new Date(`${data.date_to}T00:00:00.000Z`) : undefined;
-
-      const triggerType: 'manual' | 'backfill' = dateFrom && dateTo ? 'backfill' : 'manual';
 
       const result = await scrapeNseParticipantOi({
-        triggerType,
+        triggerType: 'manual',
         triggeredBy,
         observationDate,
-        dateFrom,
-        dateTo,
       });
 
       res.json({ success: result.status === 'success', result });

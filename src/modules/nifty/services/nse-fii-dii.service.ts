@@ -151,14 +151,13 @@ async function persistFiiDii(
   diiInd: Indicator,
   observationDate: Date,
   fiiNet: number,
-  diiAbsorption: number,
-  fiiWasNetSeller: boolean,
+  diiAbsorption: number | null,
   fiiRow: NseFiiDiiRow,
   diiRow: NseFiiDiiRow,
   logId: string,
 ): Promise<{
   fii: FiiDiiUpsertResult;
-  dii: FiiDiiUpsertResult;
+  dii: FiiDiiUpsertResult | null;
 }> {
   return prisma.$transaction(async (tx) => {
     const handle = async (
@@ -220,16 +219,18 @@ async function persistFiiDii(
       rawDate: fiiRow.date,
     });
 
-    const diiResult = await handle(diiInd.id, diiInd.code, diiAbsorption, 'derived', {
-      formula: fiiWasNetSeller
-        ? 'dii_buy / abs(fii_sell)'
-        : 'dii_buy / fii_buy (FII net-buyer proxy)',
-      fii_was_net_seller: fiiWasNetSeller,
-      dii_buy_crore: parseCroreValue(diiRow.buyValue, 'dii.buyValue'),
-      fii_sell_crore: parseCroreValue(fiiRow.sellValue, 'fii.sellValue'),
-      fii_buy_crore: parseCroreValue(fiiRow.buyValue, 'fii.buyValue'),
-      derivedFrom: FII_FLOW_INDICATOR_CODE,
-    });
+    // Per spec: DII absorption is structurally undefined when FII is a net buyer.
+    // Skip persisting Ind 7 on those days.
+    const diiResult: FiiDiiUpsertResult | null =
+      diiAbsorption !== null
+        ? await handle(diiInd.id, diiInd.code, diiAbsorption, 'derived', {
+            formula: 'dii_buy / abs(fii_sell)',
+            fii_was_net_seller: true,
+            dii_buy_crore: parseCroreValue(diiRow.buyValue, 'dii.buyValue'),
+            fii_sell_crore: parseCroreValue(fiiRow.sellValue, 'fii.sellValue'),
+            derivedFrom: FII_FLOW_INDICATOR_CODE,
+          })
+        : null;
 
     return { fii: fiiResult, dii: diiResult };
   });
@@ -290,11 +291,12 @@ export async function scrapeNseFiiDii(
     const fiiNet = parseCroreValue(fiiRow.netValue, 'fii.netValue');
     const diiBuy = parseCroreValue(diiRow.buyValue, 'dii.buyValue');
     const fiiSell = parseCroreValue(fiiRow.sellValue, 'fii.sellValue');
-    const fiiBuy = parseCroreValue(fiiRow.buyValue, 'fii.buyValue');
 
     const fiiWasNetSeller = fiiNet < 0;
 
-    let diiAbsorption: number;
+    // Per spec: absorption ratio is only defined when FII is a net seller.
+    // On net-buyer days the metric is structurally undefined — set to null.
+    let diiAbsorption: number | null;
     if (fiiWasNetSeller) {
       if (Math.abs(fiiSell) < 0.01) {
         throw new AppError(
@@ -306,15 +308,7 @@ export async function scrapeNseFiiDii(
       }
       diiAbsorption = diiBuy / Math.abs(fiiSell);
     } else {
-      if (fiiBuy < 0.01) {
-        throw new AppError(
-          502,
-          'FII buy value too small to compute proxy ratio',
-          'INVALID_FIIDII_INPUTS',
-          { fiiBuy },
-        );
-      }
-      diiAbsorption = diiBuy / fiiBuy;
+      diiAbsorption = null;
     }
 
     const persisted = await persistFiiDii(
@@ -323,7 +317,6 @@ export async function scrapeNseFiiDii(
       observationDate,
       fiiNet,
       diiAbsorption,
-      fiiWasNetSeller,
       fiiRow,
       diiRow,
       log.id,
@@ -331,13 +324,13 @@ export async function scrapeNseFiiDii(
 
     const totalInserted =
       (persisted.fii.action === 'inserted' ? 1 : 0) +
-      (persisted.dii.action === 'inserted' ? 1 : 0);
+      (persisted.dii?.action === 'inserted' ? 1 : 0);
     const totalRevised =
       (persisted.fii.action === 'revised' ? 1 : 0) +
-      (persisted.dii.action === 'revised' ? 1 : 0);
+      (persisted.dii?.action === 'revised' ? 1 : 0);
     const totalSkipped =
       (persisted.fii.action === 'skipped' ? 1 : 0) +
-      (persisted.dii.action === 'skipped' ? 1 : 0);
+      (persisted.dii?.action === 'skipped' ? 1 : 0);
 
     await dataFetchLogRepository.complete({
       logId: log.id,

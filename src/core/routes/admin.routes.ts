@@ -8,6 +8,7 @@ import { scorecardRouter } from '@modules/nifty/routes/scorecard.routes';
 import { adminLogsRouter } from '@modules/nifty/routes/admin-logs.routes';
 import { cronTriggerRouter } from '@modules/nifty/routes/cron-trigger.routes';
 import { adminDataRouter } from '@modules/edgefinder/routes/admin-data.routes';
+import { cycleStancesRouter } from '@modules/edgefinder/routes/cycle-stances.routes';
 import { adminIndicatorsRouter } from '@modules/edgefinder/api/admin-indicators.routes';
 import { adminValidationRouter } from '@modules/edgefinder/api/admin-validation.routes';
 
@@ -25,6 +26,7 @@ adminRouter.use('/jobs', nseRouter);
 adminRouter.use('/jobs', cronTriggerRouter);
 adminRouter.use('/data', manualInputRouter);
 adminRouter.use('/data', adminDataRouter);
+adminRouter.use('/cycle-stances', cycleStancesRouter);
 adminRouter.use('/indicators', adminIndicatorsRouter);
 adminRouter.use('/scoring', scoringRouter);
 adminRouter.use('/scorecard', scorecardRouter);

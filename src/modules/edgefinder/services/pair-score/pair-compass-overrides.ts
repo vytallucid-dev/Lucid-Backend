@@ -14,29 +14,44 @@ export interface PairOverrideAdjustment {
 /**
  * Compute Compass overrides for pair scoring (Spec v1 §5).
  *
- * Only Override 5 (Carry Unwind) applies at pair level:
- *   - active_regime = 'Risk-Off'
- *   - pair is EURJPY or GBPJPY
- *   - adjustment: -1 (makes the pair more bearish, reflecting carry unwind)
+ * Override 3 (JPY Safe Haven): active_regime = 'Risk-Off' and pair has JPY as
+ * quote. The JPY asset scorecard's OVERRIDE_3_JPY_SAFE_HAVEN boost is injected
+ * as `jpySafeHavenBoost` by the assembly service and applied as a negative
+ * adjustment on the pair (stronger JPY quote → weaker pair).
+ *   USDJPY: −1   EURJPY: −1   GBPJPY: −1
  *
- * USDJPY does NOT receive Override 5. JPY safe-haven behavior in Risk-Off is
- * captured at the asset-scorecard level (Override 3); pair scoring is
- * independent of asset scorecard totals per the Phase 5 spec.
+ * Override 5 (Carry Unwind): active_regime = 'Risk-Off' and pair is EURJPY or
+ * GBPJPY. Adjustment: −1.
+ *   EURJPY total: −2 (−1 Safe Haven + −1 Carry Unwind)
+ *   GBPJPY total: −2 (−1 Safe Haven + −1 Carry Unwind)
  */
 export function computePairCompassOverrides(input: {
   pairCode: string;
   regime: Regime;
+  /** JPY Safe Haven boost from the JPY asset scorecard (0 when not in Risk-Off). */
+  jpySafeHavenBoost?: number;
 }): PairOverrideAdjustment {
   if (input.regime !== 'Risk-Off') {
     return { totalAdjustment: 0, overridesFired: [] };
   }
-  if (input.pairCode === 'EURJPY' || input.pairCode === 'GBPJPY') {
-    return {
-      totalAdjustment: -1,
-      overridesFired: [
-        { code: 'OVERRIDE_5_CARRY_UNWIND', adjustment: -1, pair: input.pairCode },
-      ],
-    };
+
+  const overridesFired: PairOverrideEntry[] = [];
+  let totalAdjustment = 0;
+
+  // Override 3: JPY Safe Haven — applied to all JPY-quote pairs.
+  const JPY_PAIRS = new Set(['USDJPY', 'EURJPY', 'GBPJPY']);
+  const safeHavenBoost = input.jpySafeHavenBoost ?? 0;
+  if (safeHavenBoost > 0 && JPY_PAIRS.has(input.pairCode)) {
+    const adj = -safeHavenBoost;
+    overridesFired.push({ code: 'OVERRIDE_3_JPY_SAFE_HAVEN', adjustment: adj, pair: input.pairCode });
+    totalAdjustment += adj;
   }
-  return { totalAdjustment: 0, overridesFired: [] };
+
+  // Override 5: Carry Unwind — EURJPY and GBPJPY only.
+  if (input.pairCode === 'EURJPY' || input.pairCode === 'GBPJPY') {
+    overridesFired.push({ code: 'OVERRIDE_5_CARRY_UNWIND', adjustment: -1, pair: input.pairCode });
+    totalAdjustment -= 1;
+  }
+
+  return { totalAdjustment, overridesFired };
 }
