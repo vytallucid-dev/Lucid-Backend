@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { prisma } from '@core/db/prisma';
 import { AppError } from '@core/middleware/error-handler';
+import { Prisma } from '@prisma/client';
 
 export const indicatorsRouter = Router();
 
@@ -302,7 +303,7 @@ function buildIndicatorMeta(indicator: {
 function buildActiveRule(rule: {
   version: number;
   ruleType: string;
-  ruleDefinition: object;
+  ruleDefinition: Prisma.JsonValue;
 } | null) {
   if (!rule) return null;
   return {

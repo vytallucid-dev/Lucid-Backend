@@ -77,7 +77,7 @@ cycleStancesRouter.put(
   '/:currencyCode',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const currencyCode = req.params.currencyCode?.toUpperCase() as CurrencyCode;
+      const currencyCode = (req.params.currencyCode as string)?.toUpperCase() as CurrencyCode;
       if (!VALID_CURRENCIES.includes(currencyCode)) {
         throw new AppError(
           400,
@@ -97,7 +97,13 @@ cycleStancesRouter.put(
 
       const effectiveFrom = effectiveFromRaw
         ? new Date(`${effectiveFromRaw}T00:00:00.000Z`)
-        : new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
+        : new Date(
+            Date.UTC(
+              new Date().getUTCFullYear(),
+              new Date().getUTCMonth(),
+              new Date().getUTCDate(),
+            ),
+          );
 
       const triggeredBy = req.user?.email ?? null;
 
@@ -116,7 +122,8 @@ cycleStancesRouter.put(
 
           if (sameEffectiveFrom) {
             // Same effectiveFrom — update the existing row in-place to avoid unique constraint violation
-            const isUnchanged = openRow.stance === stance && (notes === undefined || notes === openRow.notes);
+            const isUnchanged =
+              openRow.stance === stance && (notes === undefined || notes === openRow.notes);
             const updated = await tx.currencyCycleStance.update({
               where: { id: openRow.id },
               data: {
@@ -124,7 +131,10 @@ cycleStancesRouter.put(
                 notes: notes ?? openRow.notes,
               },
             });
-            return { action: isUnchanged ? ('unchanged' as const) : ('updated' as const), row: updated };
+            return {
+              action: isUnchanged ? ('unchanged' as const) : ('updated' as const),
+              row: updated,
+            };
           }
 
           // Different effectiveFrom — close the current row: set effectiveTo to effectiveFrom - 1 day
@@ -160,7 +170,9 @@ cycleStancesRouter.put(
           currencyCode: result.row.currencyCode,
           stance: result.row.stance,
           effectiveFrom: result.row.effectiveFrom.toISOString().slice(0, 10),
-          effectiveTo: result.row.effectiveTo ? result.row.effectiveTo.toISOString().slice(0, 10) : null,
+          effectiveTo: result.row.effectiveTo
+            ? result.row.effectiveTo.toISOString().slice(0, 10)
+            : null,
           notes: result.row.notes ?? null,
         },
       });
