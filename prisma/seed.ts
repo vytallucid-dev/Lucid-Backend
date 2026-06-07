@@ -138,8 +138,10 @@ async function seedIndicators(): Promise<void> {
       tool: 'nifty' as const,
       frequency: 'daily' as const,
       unit: 'index_pts',
-      dataSource: 'fred' as const,
-      sourceSeriesId: 'DTWEXBGS',
+      // Migrated from FRED (DTWEXBGS, broad-index ~118 scale) to EODHD ICE DXY
+      // (DXY.INDX, ~98 scale). See migration *_nifty_price_indicators_to_eodhd.
+      dataSource: 'eodhd' as const,
+      sourceSeriesId: 'DXY.INDX',
       displayOrder: 10,
       compositeGroup: 'external' as const,
     },
@@ -150,8 +152,9 @@ async function seedIndicators(): Promise<void> {
       tool: 'nifty' as const,
       frequency: 'daily' as const,
       unit: 'USD_per_barrel',
-      dataSource: 'fred' as const,
-      sourceSeriesId: 'DCOILBRENTEU',
+      // Migrated from FRED (DCOILBRENTEU) to EODHD commodities endpoint (BRENT).
+      dataSource: 'eodhd' as const,
+      sourceSeriesId: 'BRENT',
       displayOrder: 11,
       compositeGroup: 'external' as const,
     },
@@ -162,8 +165,9 @@ async function seedIndicators(): Promise<void> {
       tool: 'nifty' as const,
       frequency: 'daily' as const,
       unit: 'INR_per_USD',
-      dataSource: 'fred' as const,
-      sourceSeriesId: 'DEXINUS',
+      // Migrated from FRED (DEXINUS) to EODHD forex endpoint (USDINR.FOREX).
+      dataSource: 'eodhd' as const,
+      sourceSeriesId: 'USDINR.FOREX',
       displayOrder: 12,
       compositeGroup: 'external' as const,
     },

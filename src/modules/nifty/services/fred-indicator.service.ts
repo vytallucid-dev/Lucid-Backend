@@ -418,6 +418,10 @@ export async function fetchAllFredIndicators(
   triggerType: 'cron' | 'manual' | 'backfill',
   triggeredBy?: string | null,
 ): Promise<FetchFredIndicatorResult[]> {
+  // The fetch "list" is the data_source filter. The three NIFTY price indicators
+  // (DXY, Brent, USD/INR) were moved to data_source = 'eodhd' (see the EODHD
+  // job/migration), so they are no longer selected here. This still serves Ind 9's
+  // US_02Y_SMA and any other FRED-sourced series (incl. EdgeFinder US macro).
   const indicators = await prisma.indicator.findMany({
     where: { dataSource: 'fred', isActive: true },
     select: { code: true },

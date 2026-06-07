@@ -1,0 +1,11 @@
+-- AlterEnum
+-- Add 'eodhd' to the DataSource enum. EODHD (https://eodhd.com) now sources the
+-- three NIFTY price indicators (DXY, Brent, USD/INR) that were previously FRED.
+--
+-- This is intentionally a standalone migration containing ONLY the enum addition.
+-- Postgres cannot use a newly added enum value in the SAME transaction that adds
+-- it ("unsafe use of new value of enum type"), so the data backfill that flips the
+-- three indicator rows to 'eodhd' lives in the next migration
+-- (20260608120100_nifty_price_indicators_to_eodhd), which runs in its own
+-- transaction after this one has committed. IF NOT EXISTS makes it idempotent.
+ALTER TYPE "DataSource" ADD VALUE IF NOT EXISTS 'eodhd';

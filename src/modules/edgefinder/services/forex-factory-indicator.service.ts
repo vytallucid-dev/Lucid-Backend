@@ -16,6 +16,11 @@ export interface FetchForexFactoryResult {
   status: 'success' | 'partial' | 'failed';
   totalEvents: number;
   mappedCount: number;
+  /** Mapped events persisted with a usable actual (inserted/revised/unchanged). */
+  writtenWithActual: number;
+  /** Mapped events persisted with forecast+previous but actual still pending. */
+  writtenForecastOnly: number;
+  /** Mapped events skipped this run because no usable actual was published yet. */
   mappedDeferredCount: number;
   unmappedCount: number;
   rowsInserted: number;
@@ -23,6 +28,8 @@ export interface FetchForexFactoryResult {
   rowsSkipped: number;
   errors: unknown[];
   unmappedEvents: Array<{ title: string; country: string }>;
+  /** Mapped events skipped this run (no usable actual yet) — surfaced so deferrals aren't silent. */
+  deferredEvents: Array<{ title: string; country: string; date: string }>;
 }
 
 export interface MissingValueResolution {
@@ -178,6 +185,8 @@ export async function fetchForexFactoryWeek(
 
   let totalEvents = 0;
   let mappedCount = 0;
+  let writtenWithActual = 0;
+  let writtenForecastOnly = 0;
   let mappedDeferredCount = 0;
   let unmappedCount = 0;
   let rowsInserted = 0;
@@ -185,6 +194,7 @@ export async function fetchForexFactoryWeek(
   let rowsSkipped = 0;
   const errors: unknown[] = [];
   const unmappedEvents: Array<{ title: string; country: string }> = [];
+  const deferredEvents: Array<{ title: string; country: string; date: string }> = [];
 
   try {
     const fetchResult = await forexFactoryClient.getCalendarWeek();
@@ -238,7 +248,22 @@ export async function fetchForexFactoryWeek(
 
       const resolved = detectMissingValues(event);
       if (resolved.skipEntireEvent) {
+        // No usable actual yet — defer (don't write a row). Surface it so the
+        // deferral is visible (the twice-daily timing should pick up the actual
+        // on a later same-week run once the release publishes).
         mappedDeferredCount += 1;
+        deferredEvents.push({ title: event.title, country: event.country, date: event.date });
+        logger.info(
+          {
+            deferred_event: true,
+            indicatorCode,
+            title: event.title,
+            country: event.country,
+            date: event.date,
+            impact: event.impact,
+          },
+          'ForexFactory: deferred event (actual not published yet)',
+        );
         continue;
       }
 
@@ -267,6 +292,10 @@ export async function fetchForexFactoryWeek(
         if (outcome.action === 'inserted') rowsInserted += 1;
         else if (outcome.action === 'revised') rowsUpdated += 1;
         else rowsSkipped += 1;
+
+        // Reached the ingest path → event had a usable actual and is now persisted
+        // (whether newly written or already present/unchanged).
+        writtenWithActual += 1;
       } catch (err) {
         const errorPayload = {
           indicatorCode,
@@ -292,9 +321,15 @@ export async function fetchForexFactoryWeek(
         endpoint: 'week',
         totalEvents,
         mappedCount,
-        mappedDeferredCount,
+        writtenWithActual,
+        writtenForecastOnly,
+        deferredCount: mappedDeferredCount,
         unmappedCount,
+        rowsInserted,
+        rowsUpdated,
+        rowsSkipped,
         unmappedEvents,
+        deferredEvents,
       },
     });
 
@@ -303,6 +338,8 @@ export async function fetchForexFactoryWeek(
       status,
       totalEvents,
       mappedCount,
+      writtenWithActual,
+      writtenForecastOnly,
       mappedDeferredCount,
       unmappedCount,
       rowsInserted,
@@ -310,6 +347,7 @@ export async function fetchForexFactoryWeek(
       rowsSkipped,
       errors,
       unmappedEvents,
+      deferredEvents,
     };
   } catch (err) {
     const errorPayload = {
@@ -329,9 +367,15 @@ export async function fetchForexFactoryWeek(
         endpoint: 'week',
         totalEvents,
         mappedCount,
-        mappedDeferredCount,
+        writtenWithActual,
+        writtenForecastOnly,
+        deferredCount: mappedDeferredCount,
         unmappedCount,
+        rowsInserted,
+        rowsUpdated,
+        rowsSkipped,
         unmappedEvents,
+        deferredEvents,
       },
     });
 
@@ -340,6 +384,8 @@ export async function fetchForexFactoryWeek(
       status: 'failed',
       totalEvents,
       mappedCount,
+      writtenWithActual,
+      writtenForecastOnly,
       mappedDeferredCount,
       unmappedCount,
       rowsInserted,
@@ -347,6 +393,7 @@ export async function fetchForexFactoryWeek(
       rowsSkipped,
       errors: [errorPayload],
       unmappedEvents,
+      deferredEvents,
     };
   }
 }

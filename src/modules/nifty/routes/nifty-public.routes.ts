@@ -77,10 +77,19 @@ niftyPublicRouter.get(
       if (!isoDate.safeParse(dateStr).success) {
         throw new AppError(400, 'Invalid date format', 'VALIDATION_ERROR', { date: dateStr });
       }
-      const observationDate = new Date(`${dateStr}T00:00:00.000Z`);
-      if (observationDate.getTime() > Date.now()) {
+      // "Today" is IST (India-markets tool): when it's already the current date
+      // in IST (UTC+5:30) but not yet in UTC, that date is still valid. Compare
+      // calendar-date strings against the IST date. Matches the IST offset
+      // convention used elsewhere (nse-participant-oi.service).
+      const istOffsetMs = 5.5 * 60 * 60 * 1000;
+      const istToday = new Date(Date.now() + istOffsetMs).toISOString().slice(0, 10);
+      if (dateStr > istToday) {
         throw new AppError(400, 'Date cannot be in the future', 'VALIDATION_ERROR');
       }
+      // Scorecards key observation_date at UTC midnight (the assemble endpoint
+      // stores it the same way), so a valid-but-unassembled date falls through to
+      // a clean 404 SCORECARD_NOT_FOUND from getScorecardByDate.
+      const observationDate = new Date(`${dateStr}T00:00:00.000Z`);
       const data = await getScorecardByDate(observationDate);
       res.json({ success: true, data });
     } catch (err) {

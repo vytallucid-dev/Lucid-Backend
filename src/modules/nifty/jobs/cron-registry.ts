@@ -3,6 +3,7 @@ import { logger } from '@core/utils/logger';
 import { runScorecardAssemblyCron } from './scorecard-assembly.cron';
 import { runNiftyInd9BridgeCron } from './ind9-bridge.job';
 import { registerFredFetchCron } from './fred-fetch.job';
+import { registerEodhdFetchCron } from './eodhd-fetch.job';
 import { registerNseVixCron } from './nse-vix.job';
 import { registerNseFiiDiiCron } from './nse-fii-dii.job';
 import { registerNseParticipantOiCron } from './nse-participant-oi.job';
@@ -42,6 +43,9 @@ export function registerNiftyCrons(): void {
   // Invoke existing factory-style cron registrations (they configure their
   // own schedule/timezone/scheduled flags internally per file).
   registerFredFetchCron();
+  // EODHD price fetch (DXY, Brent, USD/INR) — 02:30 UTC, same slot FRED used for
+  // these three. FRED cron stays for US02Y / EdgeFinder macro series; the two coexist.
+  registerEodhdFetchCron();
   registerNseVixCron();
   registerNseFiiDiiCron();
   registerNseParticipantOiCron();

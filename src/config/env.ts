@@ -19,6 +19,8 @@ const envSchema = z.object({
 
   FRED_API_KEY: z.string().min(1, 'FRED_API_KEY is required'),
 
+  EODHD_API_KEY: z.string().min(1, 'EODHD_API_KEY is required'),
+
   ALLOWED_ORIGINS: z
     .string()
     .default('http://localhost:3000')

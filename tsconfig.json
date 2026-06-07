@@ -19,6 +19,7 @@
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
+    "ignoreDeprecations": "6.0",
     "moduleResolution": "node",
     "types": ["node"],
     "baseUrl": "./src",

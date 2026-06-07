@@ -256,7 +256,7 @@ describe('ingestManualEntry', () => {
 
     expect(mockedLogStart).toHaveBeenCalledWith(
       expect.objectContaining({
-        jobName: 'manual_data_entry',
+        jobName: 'manual_input_us_cpi_yoy',
         triggerType: 'manual',
       }),
     );

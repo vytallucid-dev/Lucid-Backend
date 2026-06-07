@@ -4,6 +4,7 @@ import { AppError } from '@core/middleware/error-handler';
 import { logger } from '@core/utils/logger';
 import { runScorecardAssemblyCron } from '@modules/nifty/jobs/scorecard-assembly.cron';
 import { runFredFetchAll } from '@modules/nifty/jobs/fred-fetch.job';
+import { runEodhdFetchAll } from '@modules/nifty/jobs/eodhd-fetch.job';
 import { runNseVixScrape } from '@modules/nifty/jobs/nse-vix.job';
 import { runNseFiiDiiScrape } from '@modules/nifty/jobs/nse-fii-dii.job';
 import { runNseParticipantOiScrape } from '@modules/nifty/jobs/nse-participant-oi.job';
@@ -23,6 +24,7 @@ type JobHandler = () => Promise<void>;
 
 const JOB_HANDLERS: Record<string, JobHandler> = {
   fred_fetch: runFredFetchAll,
+  eodhd_fetch: runEodhdFetchAll,
   nse_vix: runNseVixScrape,
   nse_fii_dii: runNseFiiDiiScrape,
   nse_participant_oi: runNseParticipantOiScrape,
@@ -39,6 +41,7 @@ const JOB_HANDLERS: Record<string, JobHandler> = {
 const triggerBodySchema = z.object({
   job_name: z.enum([
     'fred_fetch',
+    'eodhd_fetch',
     'nse_vix',
     'nse_fii_dii',
     'nse_participant_oi',

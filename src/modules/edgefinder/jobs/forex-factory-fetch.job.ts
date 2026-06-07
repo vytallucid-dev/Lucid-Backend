@@ -28,7 +28,9 @@ export async function runForexFactoryFetch(): Promise<void> {
         status: result.status,
         totalEvents: result.totalEvents,
         mappedCount: result.mappedCount,
-        mappedDeferredCount: result.mappedDeferredCount,
+        writtenWithActual: result.writtenWithActual,
+        writtenForecastOnly: result.writtenForecastOnly,
+        deferredCount: result.mappedDeferredCount,
         unmappedCount: result.unmappedCount,
         rowsInserted: result.rowsInserted,
         rowsUpdated: result.rowsUpdated,
@@ -48,19 +50,28 @@ export async function runForexFactoryFetch(): Promise<void> {
   }
 }
 
+// Twice-daily so same-day actuals land while the event is still in the CURRENT
+// week's calendar (the old single 03:30 UTC run fired before US/EU/JP releases
+// published, so events fell out of the current-week window before their actual
+// was ever captured). Both runs hit the same 'week' endpoint and the same job
+// function; the 5-min concurrent guard + shared JOB_NAME keep them coordinated.
+const RUN_A_SCHEDULE = '30 15 * * *'; // 15:30 UTC (21:00 IST) — US afternoon + EU/UK morning releases
+const RUN_B_SCHEDULE = '30 0 * * *'; //  00:30 UTC (06:00 IST) — JP overnight releases + revision safety net
+
 /**
- * Schedule daily ForexFactory fetch at 03:30 UTC.
+ * Schedule the two daily ForexFactory current-week fetches (15:30 + 00:30 UTC).
  * Manual triggers exposed via /api/admin/jobs/run.
  */
-export function registerForexFactoryFetchCron(): cron.ScheduledTask {
-  const task = cron.schedule(
-    '30 3 * * *',
-    runForexFactoryFetch,
-    {
-      scheduled: true,
-      timezone: 'UTC',
-      name: JOB_NAME,
-    },
-  );
-  return task;
+export function registerForexFactoryFetchCron(): cron.ScheduledTask[] {
+  const runA = cron.schedule(RUN_A_SCHEDULE, runForexFactoryFetch, {
+    scheduled: true,
+    timezone: 'UTC',
+    name: `${JOB_NAME}_1530`,
+  });
+  const runB = cron.schedule(RUN_B_SCHEDULE, runForexFactoryFetch, {
+    scheduled: true,
+    timezone: 'UTC',
+    name: `${JOB_NAME}_0030`,
+  });
+  return [runA, runB];
 }

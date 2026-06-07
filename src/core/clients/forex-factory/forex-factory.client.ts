@@ -11,6 +11,14 @@ const PRIMARY_BASE = 'https://nfs.faireconomy.media';
 const ENDPOINT = '/ff_calendar_thisweek.json';
 const DEFAULT_TIMEOUT_MS = 30000;
 
+// Backoff schedule for FF rate limits. FF throttles by returning either HTTP 429
+// or a 200 HTML "rate limited" page — both surface here as an AppError with code
+// 'FF_RATE_LIMITED'. axios-retry can't see the 200-HTML case (it's not an axios
+// error), so this app-level retry covers both. 3 retries: 10s, 30s, 60s.
+const RATE_LIMIT_BACKOFF_MS = [10_000, 30_000, 60_000];
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 function isJsonResponse(contentType: string | undefined, body: string): boolean {
   if (!contentType || !contentType.includes('application/json')) return false;
   const trimmed = body.trim();
@@ -65,12 +73,31 @@ class ForexFactoryClient {
 
   /**
    * Fetches the current-week Forex Factory calendar JSON from the primary host.
-   * If the host rate-limits the request (non-JSON / 429 response) the error is
-   * propagated — the broken CDN fallback has been removed.
+   * On a rate limit (HTTP 429 or non-JSON "rate limited" page — both raise
+   * FF_RATE_LIMITED) the request is retried with backoff (10s/30s/60s) so a
+   * transient throttle doesn't make a run lose its release window. Other errors
+   * (5xx/network handled by axios-retry, parse errors, etc.) propagate immediately.
    */
   async getCalendarWeek(): Promise<ForexFactoryFetchResult> {
-    const fetchedAt = new Date();
-    return await this.fetchFrom(this.primary, PRIMARY_BASE, fetchedAt);
+    for (let attempt = 0; attempt <= RATE_LIMIT_BACKOFF_MS.length; attempt++) {
+      try {
+        return await this.fetchFrom(this.primary, PRIMARY_BASE, new Date());
+      } catch (error) {
+        const isRateLimit = error instanceof AppError && error.code === 'FF_RATE_LIMITED';
+        const isLastAttempt = attempt === RATE_LIMIT_BACKOFF_MS.length;
+        if (!isRateLimit || isLastAttempt) {
+          throw error;
+        }
+        const delayMs = RATE_LIMIT_BACKOFF_MS[attempt];
+        logger.warn(
+          { attempt: attempt + 1, maxRetries: RATE_LIMIT_BACKOFF_MS.length, delayMs },
+          'ForexFactory rate-limited — backing off before retry',
+        );
+        await sleep(delayMs);
+      }
+    }
+    // Unreachable: the loop always returns a result or throws on the last attempt.
+    throw new AppError(502, 'ForexFactory fetch exhausted retries', 'FF_RETRY_EXHAUSTED');
   }
 
   private async fetchFrom(

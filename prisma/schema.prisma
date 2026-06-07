@@ -54,6 +54,7 @@ enum DataSource {
   yahoo
   jblanked // dead value, no rows use it, kept for enum stability
   forex_factory
+  eodhd
 }
 
 enum ScoringRuleType {

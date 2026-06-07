@@ -6,7 +6,10 @@ import { dataPointsRepository } from '@core/repositories/data-points.repository'
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import { getPriorRateLevel } from './rate-decision.helpers';
 
-const JOB_NAME = 'manual_data_entry';
+// Per-indicator log name (mirrors the NIFTY manual-input convention
+// `manual_input_<code>`) so each indicator's detail page can filter its own
+// manual entries/overrides out of data_fetch_log.
+const JOB_NAME_PREFIX = 'manual_input_';
 
 export interface ManualEntryInput {
   indicatorCode: string;
@@ -60,7 +63,7 @@ export async function ingestManualEntry(
   const isRateDecision = indicator.code.endsWith('_RATE');
 
   const log = await dataFetchLogRepository.start({
-    jobName: JOB_NAME,
+    jobName: `${JOB_NAME_PREFIX}${indicator.code.toLowerCase()}`,
     triggerType: 'manual',
     triggeredBy: input.triggeredBy ?? null,
     metadata: {
