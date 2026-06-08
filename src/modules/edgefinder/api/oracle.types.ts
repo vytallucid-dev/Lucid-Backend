@@ -11,7 +11,7 @@
 /** Frontend getBias thresholds (from assets.ts getBias function). */
 export type BiasType = 'Strong Bullish' | 'Bullish' | 'Neutral' | 'Bearish' | 'Strong Bearish';
 
-export type AssetType = 'Forex' | 'Commodity' | 'Index';
+export type AssetType = 'Forex' | 'Currency' | 'Commodity' | 'Index';
 
 export type IndicatorValue = 1 | 0 | -1 | null; // null = N/A
 
@@ -122,7 +122,7 @@ export interface CotAsset {
   cotScore: CotScore | null;
   scoreTooltip: string;
   trend: number[] | null; // 4-week history of netPctChange; null when no COT data
-  outcome: 'scored' | 'insufficient_data';
+  outcome: 'scored' | 'insufficient_data' | 'deferred';
   reason: string | null;
 }
 

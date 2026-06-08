@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { AppError } from '@core/middleware/error-handler';
 import { getLatestScorecard, getScorecardHistory } from '@modules/nifty/services/public-api.service';
+import { getUsdLabDetail, getUsdLabSubIndicatorHistory } from '@modules/nifty/services/usd-lab.service';
 import type {
   PublicScorecard,
   PublicIndicator,
@@ -182,6 +183,52 @@ niftyPublicV2Router.get(
         count: items.length,
         data: items,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ============================================================================
+// GET /api/nifty/usd-lab  — Indicator 9 (USD Weakness) full breakdown
+// ============================================================================
+
+niftyPublicV2Router.get(
+  '/usd-lab',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const data = await getUsdLabDetail();
+      if (!data) {
+        throw new AppError(404, 'No Ind 9 data available', 'IND9_NOT_FOUND');
+      }
+      res.json({ success: true, data });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ============================================================================
+// GET /api/nifty/usd-lab/sub-indicator/:code  — last-12 release history (drawer)
+// ============================================================================
+
+const subIndicatorParamsSchema = z.object({
+  code: z.string().regex(/^[A-Z0-9_]{2,40}$/),
+});
+
+niftyPublicV2Router.get(
+  '/usd-lab/sub-indicator/:code',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const parsed = subIndicatorParamsSchema.safeParse(req.params);
+      if (!parsed.success) {
+        throw new AppError(400, 'Invalid sub-indicator code', 'VALIDATION_ERROR', parsed.error.flatten());
+      }
+      const data = await getUsdLabSubIndicatorHistory(parsed.data.code);
+      if (!data) {
+        throw new AppError(404, `Unknown Ind 9 sub-indicator: ${parsed.data.code}`, 'SUB_INDICATOR_NOT_FOUND');
+      }
+      res.json({ success: true, data });
     } catch (err) {
       next(err);
     }

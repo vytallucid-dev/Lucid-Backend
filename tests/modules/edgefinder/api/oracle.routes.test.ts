@@ -421,10 +421,23 @@ describe('GET /api/oracle/scorecard', () => {
 // ============================================================================
 
 describe('GET /api/oracle/cot', () => {
-  it('returns success:true with 8-element data array when no COT data', async () => {
-    mockedAsset.findMany.mockResolvedValue(makeAssets());
+  // COT data is reported per CFTC contract (the 4 currencies + Gold), not per
+  // forex pair, so the COT page rows use currency/commodity asset codes.
+  function makeCotAssets() {
+    return [
+      { id: 'asset-USD', code: 'USD' },
+      { id: 'asset-EUR', code: 'EUR' },
+      { id: 'asset-GBP', code: 'GBP' },
+      { id: 'asset-JPY', code: 'JPY' },
+      { id: 'asset-XAUUSD', code: 'XAUUSD' },
+      { id: 'asset-SPY', code: 'SPY' },
+      { id: 'asset-NAS100', code: 'NAS100' },
+    ];
+  }
+
+  it('returns success:true with 7-element data array when no COT data', async () => {
+    mockedAsset.findMany.mockResolvedValue(makeCotAssets());
     mockedCotData.findMany.mockResolvedValue([]);
-    mockedPairScore.findMany.mockResolvedValue([]);
     mockedScorecard.findMany.mockResolvedValue([]);
 
     const res = await request(app)
@@ -433,20 +446,22 @@ describe('GET /api/oracle/cot', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.data).toHaveLength(8);
+    expect(res.body.data).toHaveLength(7);
+    expect(res.body.data.map((d: { asset: string }) => d.asset)).toEqual([
+      'USD', 'EUR', 'GBP', 'JPY', 'XAUUSD', 'SPY', 'NAS100',
+    ]);
   });
 
   it('returns null numeric fields and outcome=insufficient_data when no COT data ingested', async () => {
-    mockedAsset.findMany.mockResolvedValue(makeAssets());
+    mockedAsset.findMany.mockResolvedValue(makeCotAssets());
     mockedCotData.findMany.mockResolvedValue([]);
-    mockedPairScore.findMany.mockResolvedValue([]);
     mockedScorecard.findMany.mockResolvedValue([]);
 
     const res = await request(app)
       .get('/api/oracle/cot')
 ;
 
-    const eur = res.body.data.find((d: { asset: string }) => d.asset === 'EURUSD');
+    const eur = res.body.data.find((d: { asset: string }) => d.asset === 'EUR');
     expect(eur.outcome).toBe('insufficient_data');
     expect(eur.reason).toBeTruthy();
     expect(eur.longContracts).toBeNull();
@@ -461,11 +476,29 @@ describe('GET /api/oracle/cot', () => {
     expect(eur.trend).toBeNull();
   });
 
+  it('marks SPY and NAS100 as deferred', async () => {
+    mockedAsset.findMany.mockResolvedValue(makeCotAssets());
+    mockedCotData.findMany.mockResolvedValue([]);
+    mockedScorecard.findMany.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get('/api/oracle/cot')
+;
+
+    for (const code of ['SPY', 'NAS100']) {
+      const row = res.body.data.find((d: { asset: string }) => d.asset === code);
+      expect(row.outcome).toBe('deferred');
+      expect(row.cotScore).toBeNull();
+      expect(row.trend).toBeNull();
+      expect(row.reason).toBe('Scoring deferred pending backtesting. Activation planned post-v1.');
+    }
+  });
+
   it('returns populated fields and outcome=scored when COT data exists', async () => {
-    mockedAsset.findMany.mockResolvedValue(makeAssets());
+    mockedAsset.findMany.mockResolvedValue(makeCotAssets());
     mockedCotData.findMany.mockResolvedValue([
       {
-        assetId: 'asset-EURUSD',
+        assetId: 'asset-EUR',
         longContracts: 100000,
         shortContracts: 80000,
         changeInLongContracts: 5000,
@@ -477,14 +510,13 @@ describe('GET /api/oracle/cot', () => {
         changeLabel: 'Bullish',
       },
     ]);
-    mockedPairScore.findMany.mockResolvedValue([{ pairId: 'asset-EURUSD', pairCotScore: 1 }]);
-    mockedScorecard.findMany.mockResolvedValue([]);
+    mockedScorecard.findMany.mockResolvedValue([{ assetId: 'asset-EUR', cotScore: 1 }]);
 
     const res = await request(app)
       .get('/api/oracle/cot')
 ;
 
-    const eur = res.body.data.find((d: { asset: string }) => d.asset === 'EURUSD');
+    const eur = res.body.data.find((d: { asset: string }) => d.asset === 'EUR');
     expect(eur.outcome).toBe('scored');
     expect(eur.reason).toBeNull();
     expect(eur.longContracts).toBe(100000);
@@ -494,11 +526,11 @@ describe('GET /api/oracle/cot', () => {
     expect(Array.isArray(eur.trend)).toBe(true);
   });
 
-  it('populates cotScore from pairScore for FX pairs', async () => {
-    mockedAsset.findMany.mockResolvedValue(makeAssets());
+  it('populates cotScore from the asset scorecard', async () => {
+    mockedAsset.findMany.mockResolvedValue(makeCotAssets());
     mockedCotData.findMany.mockResolvedValue([
       {
-        assetId: 'asset-EURUSD',
+        assetId: 'asset-EUR',
         longContracts: 100000,
         shortContracts: 80000,
         changeInLongContracts: 5000,
@@ -510,14 +542,13 @@ describe('GET /api/oracle/cot', () => {
         changeLabel: 'Bullish',
       },
     ]);
-    mockedPairScore.findMany.mockResolvedValue([{ pairId: 'asset-EURUSD', pairCotScore: 2 }]);
-    mockedScorecard.findMany.mockResolvedValue([]);
+    mockedScorecard.findMany.mockResolvedValue([{ assetId: 'asset-EUR', cotScore: 2 }]);
 
     const res = await request(app)
       .get('/api/oracle/cot')
 ;
 
-    const eur = res.body.data.find((d: { asset: string }) => d.asset === 'EURUSD');
+    const eur = res.body.data.find((d: { asset: string }) => d.asset === 'EUR');
     expect(eur.cotScore).toBe(2);
     expect(eur.longContracts).toBe(100000);
   });

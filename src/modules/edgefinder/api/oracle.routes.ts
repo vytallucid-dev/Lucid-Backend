@@ -45,7 +45,7 @@ import {
   FX_PAIR_META,
   SCORECARD_KEY_TO_ASSET_CODE,
   SCORECARD_ASSET_META,
-  COT_ASSET_FLAG,
+  COT_ASSETS,
 } from './oracle-mappers';
 
 export const oracleRouter = Router();
@@ -481,25 +481,20 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
 
 oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const allCodes = ORACLE_ASSETS.map((a) => a.dbCode);
+    const allCodes = COT_ASSETS.map((a) => a.dbCode);
     const assetRecords = await prisma.asset.findMany({ where: { code: { in: allCodes } } });
     const assetByCode = new Map(assetRecords.map((a) => [a.code, a]));
-    const assetIds = assetRecords.map((a) => a.id);
+    // Only the non-deferred COT instruments carry cot_data / scorecard rows.
+    const dataAssetIds = COT_ASSETS.filter((m) => !m.deferred)
+      .map((m) => assetByCode.get(m.dbCode)?.id)
+      .filter((id): id is string => id !== undefined);
 
     const fourWeeksAgo = new Date();
     fourWeeksAgo.setDate(fourWeeksAgo.getDate() - 35); // ~5 weeks buffer
 
-    const fxCodes = ['EURUSD', 'GBPUSD', 'USDJPY', 'EURJPY', 'GBPJPY'];
-    const fxPairIds = fxCodes
-      .map((c) => assetByCode.get(c)?.id)
-      .filter((id): id is string => id !== undefined);
-    const otherIds = ['XAUUSD', 'SPY', 'NAS100']
-      .map((c) => assetByCode.get(c)?.id)
-      .filter((id): id is string => id !== undefined);
-
-    const [cotRows, cotHistoryRows, pairScoreRows, scorecardRows] = await Promise.all([
+    const [cotRows, cotHistoryRows, scorecardRows] = await Promise.all([
       prisma.cotData.findMany({
-        where: { assetId: { in: assetIds }, isCurrent: true },
+        where: { assetId: { in: dataAssetIds }, isCurrent: true },
         orderBy: { reportDate: 'desc' },
         select: {
           assetId: true,
@@ -515,17 +510,12 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
         },
       }),
       prisma.cotData.findMany({
-        where: { assetId: { in: assetIds }, reportDate: { gte: fourWeeksAgo } },
+        where: { assetId: { in: dataAssetIds }, reportDate: { gte: fourWeeksAgo } },
         orderBy: { reportDate: 'asc' },
         select: { assetId: true, weeklyChangePct: true },
       }),
-      prisma.edgefinderPairScore.findMany({
-        where: { pairId: { in: fxPairIds }, isCurrent: true },
-        orderBy: { scoreDate: 'desc' },
-        select: { pairId: true, pairCotScore: true },
-      }),
       prisma.edgefinderScorecard.findMany({
-        where: { assetId: { in: otherIds }, isCurrent: true },
+        where: { assetId: { in: dataAssetIds }, isCurrent: true },
         orderBy: { observationDate: 'desc' },
         select: { assetId: true, cotScore: true },
       }),
@@ -542,24 +532,42 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
       trendMap.get(h.assetId)!.push(Number(h.weeklyChangePct ?? 0));
     }
 
-    const pairCotByAssetId = new Map<string, number>();
-    for (const ps of pairScoreRows) {
-      if (!pairCotByAssetId.has(ps.pairId)) pairCotByAssetId.set(ps.pairId, ps.pairCotScore);
-    }
-
+    // COT score comes from each instrument's asset scorecard (USD/EUR/GBP/JPY/XAUUSD).
     const cotScoreByAssetId = new Map<string, number>();
     for (const sc of scorecardRows) {
       if (!cotScoreByAssetId.has(sc.assetId)) cotScoreByAssetId.set(sc.assetId, sc.cotScore);
     }
 
-    const result: CotAsset[] = ORACLE_ASSETS.map((meta) => {
+    const result: CotAsset[] = COT_ASSETS.map((meta) => {
+      // Deferred instruments (SPY, NAS100) — no CFTC ingestion yet.
+      if (meta.deferred) {
+        return {
+          asset: meta.code,
+          flag: meta.flag,
+          type: meta.type,
+          longContracts: null,
+          shortContracts: null,
+          deltaLong: null,
+          deltaShort: null,
+          longPct: null,
+          shortPct: null,
+          netPctChange: null,
+          netPosition: null,
+          cotScore: null,
+          scoreTooltip: 'Scoring deferred pending backtesting',
+          trend: null,
+          outcome: 'deferred' as const,
+          reason: 'Scoring deferred pending backtesting. Activation planned post-v1.',
+        };
+      }
+
       const asset = assetByCode.get(meta.dbCode);
       const cot = asset ? latestCot.get(asset.id) : undefined;
 
       if (!asset || !cot) {
         return {
           asset: meta.code,
-          flag: COT_ASSET_FLAG[meta.code] ?? meta.flag,
+          flag: meta.flag,
           type: meta.type,
           longContracts: null,
           shortContracts: null,
@@ -581,9 +589,7 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
       const trend = rawTrend.slice(-4);
       while (trend.length < 4) trend.unshift(0);
 
-      const cotScoreRaw = meta.type === 'Forex'
-        ? (pairCotByAssetId.get(asset.id) ?? 0)
-        : (cotScoreByAssetId.get(asset.id) ?? 0);
+      const cotScoreRaw = cotScoreByAssetId.get(asset.id) ?? 0;
       const cotScore = clampCotValue(cotScoreRaw) as CotScore;
 
       const longContracts = cot.longContracts ?? 0;
@@ -594,7 +600,7 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
 
       return {
         asset: meta.code,
-        flag: COT_ASSET_FLAG[meta.code] ?? meta.flag,
+        flag: meta.flag,
         type: meta.type,
         longContracts,
         shortContracts,

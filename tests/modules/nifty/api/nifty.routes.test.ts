@@ -31,15 +31,23 @@ vi.mock('@modules/nifty/services/public-api.service', () => ({
   getScorecardHistory: vi.fn(),
 }));
 
+vi.mock('@modules/nifty/services/usd-lab.service', () => ({
+  getUsdLabDetail: vi.fn(),
+  getUsdLabSubIndicatorHistory: vi.fn(),
+}));
+
 import express from 'express';
 import request from 'supertest';
 import { getLatestScorecard, getScorecardHistory } from '@modules/nifty/services/public-api.service';
+import { getUsdLabDetail, getUsdLabSubIndicatorHistory } from '@modules/nifty/services/usd-lab.service';
 import { niftyPublicV2Router } from '@modules/nifty/api/nifty.routes';
 import { requireAuth } from '@core/middleware/supabase-auth.middleware';
 import { errorHandler } from '@core/middleware/error-handler';
 
 const mockedGetLatest = getLatestScorecard as unknown as ReturnType<typeof vi.fn>;
 const mockedGetHistory = getScorecardHistory as unknown as ReturnType<typeof vi.fn>;
+const mockedUsdLab = getUsdLabDetail as unknown as ReturnType<typeof vi.fn>;
+const mockedUsdLabSub = getUsdLabSubIndicatorHistory as unknown as ReturnType<typeof vi.fn>;
 
 function makeApp() {
   const app = express();
@@ -240,5 +248,79 @@ describe('GET /api/nifty/patterns', () => {
     expect(pattern).toHaveProperty('category');
     expect(pattern).toHaveProperty('instances');
     expect(pattern).toHaveProperty('rule');
+  });
+});
+
+// ============================================================================
+// GET /api/nifty/usd-lab
+// ============================================================================
+
+describe('GET /api/nifty/usd-lab', () => {
+  it('returns 404 when no Ind 9 data exists', async () => {
+    mockedUsdLab.mockResolvedValue(null);
+
+    const res = await request(app).get('/api/nifty/usd-lab');
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('IND9_NOT_FOUND');
+  });
+
+  it('wraps the service result in a success envelope', async () => {
+    const detail = {
+      asOf: '2026-06-08',
+      rawComposite: 9,
+      niftyScore: -2,
+      tiers: [],
+      composition: { flag: 'INFLATION_HOT', activated: true, side: 'strong', iNeg: 0, glNeg: 1, iPos: 3, glPos: 5, checks: [], read: 'x' },
+      subIndicators: [],
+      clusters: [],
+      history: [],
+      dataQuality: { dataCount: 14, parseableCount: 14, staleCount: 0, computability: 'FULL', suppressed: false },
+    };
+    mockedUsdLab.mockResolvedValue(detail);
+
+    const res = await request(app).get('/api/nifty/usd-lab');
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.rawComposite).toBe(9);
+    expect(res.body.data.niftyScore).toBe(-2);
+    expect(res.body.data.composition.flag).toBe('INFLATION_HOT');
+  });
+});
+
+// ============================================================================
+// GET /api/nifty/usd-lab/sub-indicator/:code
+// ============================================================================
+
+describe('GET /api/nifty/usd-lab/sub-indicator/:code', () => {
+  it('returns 404 for an unknown sub-indicator code', async () => {
+    mockedUsdLabSub.mockResolvedValue(null);
+
+    const res = await request(app).get('/api/nifty/usd-lab/sub-indicator/US_BOGUS');
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('SUB_INDICATOR_NOT_FOUND');
+  });
+
+  it('returns the release history in a success envelope', async () => {
+    mockedUsdLabSub.mockResolvedValue({
+      code: 'US_CPI_YOY',
+      name: 'CPI YoY',
+      short: 'CPI',
+      category: 'Direction vs Prior',
+      cluster: 'INFLATION',
+      cadence: 'Monthly',
+      dataSource: 'Forex Factory',
+      releases: [{ date: '2026-05-12', actual: '3.8%', reference: '3.3%', referenceKind: 'prior', score: 1 }],
+    });
+
+    const res = await request(app).get('/api/nifty/usd-lab/sub-indicator/US_CPI_YOY');
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.code).toBe('US_CPI_YOY');
+    expect(res.body.data.releases).toHaveLength(1);
+    expect(mockedUsdLabSub).toHaveBeenCalledWith('US_CPI_YOY');
   });
 });

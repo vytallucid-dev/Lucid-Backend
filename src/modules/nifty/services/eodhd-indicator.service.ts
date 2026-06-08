@@ -10,6 +10,15 @@ import type { EodhdDataPoint } from '@core/clients/eodhd/types';
 const DEFAULT_BACKFILL_DAYS = 60;
 const REVISION_BUFFER_DAYS = 30;
 
+// The EODHD commodities endpoint (BRENT) ignores `from` and returns full history
+// (~480 rows) every fetch, unlike the EOD endpoint (DXY, USD/INR) which honors it.
+// Cap the commodity series to the most recent N points before the write loop so a
+// Brent fetch doesn't rewrite hundreds of unchanged rows (and run ~10 min) each
+// time. 30 comfortably covers the 10-day rolling-direction calc — which reads
+// accumulated DB history and needs lookback+1 = 11 points — so it can't truncate
+// scoring even on a cold start.
+const COMMODITY_RECENT_WINDOW = 30;
+
 type EodhdEndpointKind = 'eod' | 'commodity';
 
 interface EodhdIndicatorConfig {
@@ -245,7 +254,15 @@ export async function fetchEodhdIndicator(
 
   try {
     const points = await fetchSeriesForConfig(config, toIsoDate(dateFrom));
-    const run = await ingestPoints(indicator, config, points, dateTo, log.id);
+
+    // Commodity path only: don't trust the endpoint's `from` — it returns full
+    // history regardless. `points` is sorted ascending, so the tail is the most
+    // recent window. The EOD path (DXY, USD/INR) already returns a small
+    // `from`-limited series and is left as-is.
+    const windowed =
+      config.kind === 'commodity' ? points.slice(-COMMODITY_RECENT_WINDOW) : points;
+
+    const run = await ingestPoints(indicator, config, windowed, dateTo, log.id);
 
     const status: 'success' | 'partial' = run.errors.length === 0 ? 'success' : 'partial';
 

@@ -403,6 +403,33 @@ export const PAIR_COT_CURRENCY: Record<string, string> = {
   GBPJPY: 'GBP',
 };
 
+/**
+ * Assets shown on the COT (Commitment of Traders) page.
+ *
+ * COT positioning is reported by the CFTC per **futures contract**, so the rows
+ * are the individual instruments we track — the four currency futures + Gold —
+ * NOT the forex pairs. cot_data is keyed by the currency/commodity asset code
+ * (USD/EUR/GBP/JPY/XAUUSD), which is why iterating the pair-based ORACLE_ASSETS
+ * only ever matched XAUUSD. SPY and NAS100 are deferred (no CFTC ingestion yet).
+ */
+export interface CotAssetMeta {
+  code: string;   // display code + React key
+  dbCode: string; // asset.code in DB that owns the cot_data / scorecard rows
+  flag: string;
+  type: 'Currency' | 'Commodity' | 'Index';
+  deferred?: boolean;
+}
+
+export const COT_ASSETS: CotAssetMeta[] = [
+  { code: 'USD', dbCode: 'USD', flag: '🇺🇸', type: 'Currency' },
+  { code: 'EUR', dbCode: 'EUR', flag: '🇪🇺', type: 'Currency' },
+  { code: 'GBP', dbCode: 'GBP', flag: '🇬🇧', type: 'Currency' },
+  { code: 'JPY', dbCode: 'JPY', flag: '🇯🇵', type: 'Currency' },
+  { code: 'XAUUSD', dbCode: 'XAUUSD', flag: '🪙', type: 'Commodity' },
+  { code: 'SPY', dbCode: 'SPY', flag: '🇺🇸', type: 'Index', deferred: true },
+  { code: 'NAS100', dbCode: 'NAS100', flag: '🇺🇸', type: 'Index', deferred: true },
+];
+
 /** COT flags per asset in COT table. */
 export const COT_ASSET_FLAG: Record<string, string> = {
   EURUSD: '🇪🇺🇺🇸',
