@@ -48,6 +48,8 @@ export interface AssetData {
   jolts: IndicatorValue;
   outcome: 'scored' | 'insufficient_data' | 'deferred';
   reason: string | null;
+  /** ISO date of the latest pair-score/scorecard underlying this row (global max across assets). */
+  lastUpdated: string | null;
 }
 
 // ============================================================================
@@ -98,6 +100,8 @@ export interface ScorecardAsset {
   scoreHistory: number[] | null;
   outcome: 'scored' | 'insufficient_data' | 'deferred';
   reason: string | null;
+  /** ISO date of the scorecard's observationDate (when the underlying data is as-of). */
+  lastUpdated: string | null;
 }
 
 // ============================================================================
@@ -124,6 +128,10 @@ export interface CotAsset {
   trend: number[] | null; // 4-week history of netPctChange; null when no COT data
   outcome: 'scored' | 'insufficient_data' | 'deferred';
   reason: string | null;
+  /** Latest CFTC report date across all assets (ISO date). "Data as of". */
+  dataAsOf: string | null;
+  /** Friday the latest report was published (ISO date). "Released". */
+  releasedOn: string | null;
 }
 
 // ============================================================================
@@ -212,4 +220,6 @@ export interface FxPairData {
   scoreHistory: number[] | null;
   outcome: 'scored' | 'insufficient_data';
   reason: string | null;
+  /** ISO date of the pair score's scoreDate (when the underlying data is as-of). */
+  lastUpdated: string | null;
 }

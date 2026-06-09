@@ -85,6 +85,52 @@ function compositeFor(indicatorCode: string): PublicComposite {
   return DOMESTIC_CODES.has(indicatorCode) ? 'Domestic' : 'External';
 }
 
+// ── Static indicator-list cache ──────────────────────────────────────────────
+// The active nifty indicator set (13 rows) is effectively static. The
+// history-with-breakdown path resolves indicators once PER scorecard, so this
+// list was being re-queried ~100× per request. Cache it behind a short TTL so
+// admin edits still propagate within a minute.
+type NiftyIndicatorRow = Awaited<ReturnType<typeof prisma.indicator.findMany>>[number];
+let niftyIndicatorCache: { at: number; rows: NiftyIndicatorRow[] } | null = null;
+const INDICATOR_CACHE_TTL_MS = 60_000;
+
+async function getNiftyIndicatorsCached(): Promise<NiftyIndicatorRow[]> {
+  const now = Date.now();
+  if (niftyIndicatorCache && now - niftyIndicatorCache.at < INDICATOR_CACHE_TTL_MS) {
+    return niftyIndicatorCache.rows;
+  }
+  const rows = await prisma.indicator.findMany({
+    where: { tool: 'nifty', isActive: true },
+    orderBy: { displayOrder: 'asc' },
+  });
+  niftyIndicatorCache = { at: now, rows };
+  return rows;
+}
+
+/**
+ * Run an async mapper over `items` with a bounded number of concurrent calls,
+ * preserving input order. Used to fan out per-scorecard breakdown resolution
+ * (history-with-breakdown) instead of awaiting strictly one-at-a-time, without
+ * stampeding the DB connection pool the way an unbounded Promise.all would.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < items.length) {
+      const idx = cursor++;
+      results[idx] = await fn(items[idx]);
+    }
+  }
+  const workerCount = Math.min(Math.max(1, limit), items.length || 1);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
 /**
  * Resolves the 13-indicator array for a scorecard using bulk queries.
  * Uses Postgres DISTINCT ON for latest-per-indicator lookups, reducing
@@ -94,10 +140,7 @@ async function resolveIndicators(
   observationDate: Date,
   indicatorBreakdown: Record<string, unknown>,
 ): Promise<PublicIndicator[]> {
-  const indicators = await prisma.indicator.findMany({
-    where: { tool: 'nifty', isActive: true },
-    orderBy: { displayOrder: 'asc' },
-  });
+  const indicators = await getNiftyIndicatorsCached();
 
   if (indicators.length === 0) return [];
 
@@ -360,10 +403,12 @@ export async function getScorecardHistory(
   });
 
   if (params.includeBreakdown) {
-    const full: PublicScorecard[] = [];
-    for (const sc of scorecards) {
-      full.push(await mapScorecardToPublic(sc));
-    }
+    // Fan out the per-scorecard breakdown resolution with bounded concurrency.
+    // Previously strictly sequential (`for … await`), which for a 100-row
+    // history meant ~300 serial DB round-trips — the dominant cause of the
+    // history page's long load. Concurrency 6 keeps peak in-flight queries
+    // within the pool while cutting wall-clock dramatically.
+    const full = await mapWithConcurrency(scorecards, 6, mapScorecardToPublic);
     return { items: full, count: full.length, limit };
   }
 

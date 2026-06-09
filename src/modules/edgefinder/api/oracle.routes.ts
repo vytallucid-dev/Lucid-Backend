@@ -151,6 +151,7 @@ oracleRouter.get('/assets', async (_req: Request, res: Response, next: NextFunct
         orderBy: { scoreDate: 'desc' },
         select: {
           pairId: true,
+          scoreDate: true,
           totalScore: true,
           pairCotScore: true,
           rowBreakdown: true,
@@ -162,17 +163,25 @@ oracleRouter.get('/assets', async (_req: Request, res: Response, next: NextFunct
         return prisma.edgefinderScorecard.findFirst({
           where: { assetId: xauAsset.id, isCurrent: true },
           orderBy: { observationDate: 'desc' },
-          select: { totalScore: true, cotScore: true, indicatorBreakdown: true },
+          select: { totalScore: true, cotScore: true, indicatorBreakdown: true, observationDate: true },
         });
       })(),
     ]);
+
+    // Global "last updated" = the most recent underlying score date across all
+    // assets shown in the table (FX pair scoreDates + Gold scorecard date).
+    let lastUpdatedDate: Date | null = xauScorecardResult?.observationDate ?? null;
+    for (const ps of pairScoreRows) {
+      if (!lastUpdatedDate || ps.scoreDate > lastUpdatedDate) lastUpdatedDate = ps.scoreDate;
+    }
+    const lastUpdated = lastUpdatedDate ? lastUpdatedDate.toISOString() : null;
 
     const latestPairScore = new Map<string, (typeof pairScoreRows)[0]>();
     for (const ps of pairScoreRows) {
       if (!latestPairScore.has(ps.pairId)) latestPairScore.set(ps.pairId, ps);
     }
 
-    const result: AssetData[] = ORACLE_ASSETS.map((meta) => {
+    const built = ORACLE_ASSETS.map((meta): Omit<AssetData, 'lastUpdated'> => {
       const asset = assetByCode.get(meta.dbCode);
       const base = {
         asset: meta.code,
@@ -264,6 +273,8 @@ oracleRouter.get('/assets', async (_req: Request, res: Response, next: NextFunct
       };
     });
 
+    const result: AssetData[] = built.map((row) => ({ ...row, lastUpdated }));
+
     res.json({ success: true, data: result });
   } catch (err) {
     next(err);
@@ -278,13 +289,9 @@ const scorecardQuerySchema = z.object({
   asset: z.enum(['USD', 'EUR', 'GBP', 'JPY', 'Gold', 'SPY', 'NAS100']),
 });
 
-async function buildCotDetail(assetCode: string, cotScoreFromScorecard: number): Promise<CotDetail> {
-  const asset = await prisma.asset.findFirst({ where: { code: assetCode } });
-  if (!asset) {
-    return { netPositioning: 'Neutral', weeklyChange: 'Neutral', cotScore: cotScoreFromScorecard, longPct: '—', shortPct: '—', deltaWeekly: '—' };
-  }
+async function buildCotDetail(assetId: string, cotScoreFromScorecard: number): Promise<CotDetail> {
   const cotRow = await prisma.cotData.findFirst({
-    where: { assetId: asset.id, isCurrent: true },
+    where: { assetId, isCurrent: true },
     orderBy: { reportDate: 'desc' },
     select: { netPositioningLabel: true, changeLabel: true, longPct: true, shortPct: true, weeklyChangePct: true },
   });
@@ -326,6 +333,7 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
         scoreHistory: null,
         outcome: 'deferred',
         reason: 'Scoring deferred pending backtesting. Activation planned post-v1.',
+        lastUpdated: null,
       };
       res.json({ success: true, data: deferred });
       return;
@@ -339,6 +347,15 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
     const scorecard = await prisma.edgefinderScorecard.findFirst({
       where: { assetId: assetRecord.id, isCurrent: true },
       orderBy: { observationDate: 'desc' },
+      // Only the fields this handler reads — avoids pulling the large
+      // cotBreakdown / compassOverridesApplied JSON blobs.
+      select: {
+        totalScore: true,
+        fundamentalsScore: true,
+        cotScore: true,
+        indicatorBreakdown: true,
+        observationDate: true,
+      },
     });
 
     const now = new Date();
@@ -357,6 +374,7 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
         scoreHistory: null,
         outcome: 'insufficient_data',
         reason: 'Scorecard not yet computed for this asset',
+        lastUpdated: null,
       };
       res.json({ success: true, data: noData });
       return;
@@ -385,7 +403,7 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
           previousValue: true,
         },
       }),
-      buildCotDetail(dbCode, scorecard.cotScore),
+      buildCotDetail(assetRecord.id, scorecard.cotScore),
       compute12WeekHistory(assetRecord.id, now),
     ]);
 
@@ -467,6 +485,7 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
       scoreHistory,
       outcome: 'scored',
       reason: null,
+      lastUpdated: scorecard.observationDate.toISOString(),
     };
 
     res.json({ success: true, data: response });
@@ -498,6 +517,8 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
         orderBy: { reportDate: 'desc' },
         select: {
           assetId: true,
+          reportDate: true,
+          releaseDate: true,
           longContracts: true,
           shortContracts: true,
           changeInLongContracts: true,
@@ -510,7 +531,9 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
         },
       }),
       prisma.cotData.findMany({
-        where: { assetId: { in: dataAssetIds }, reportDate: { gte: fourWeeksAgo } },
+        // isCurrent guard: without it, revised (vintage-flipped) rows would
+        // double-count a week in the 4-week trend sparkline.
+        where: { assetId: { in: dataAssetIds }, isCurrent: true, reportDate: { gte: fourWeeksAgo } },
         orderBy: { reportDate: 'asc' },
         select: { assetId: true, weeklyChangePct: true },
       }),
@@ -526,6 +549,17 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
       if (!latestCot.has(row.assetId)) latestCot.set(row.assetId, row);
     }
 
+    // Global "Data as of / Released" = the most recent CFTC report across all
+    // tracked instruments (all assets in a given release share these dates).
+    let latestReport: { reportDate: Date; releaseDate: Date } | null = null;
+    for (const row of latestCot.values()) {
+      if (!latestReport || row.reportDate > latestReport.reportDate) {
+        latestReport = { reportDate: row.reportDate, releaseDate: row.releaseDate };
+      }
+    }
+    const dataAsOf = latestReport ? latestReport.reportDate.toISOString() : null;
+    const releasedOn = latestReport ? latestReport.releaseDate.toISOString() : null;
+
     const trendMap = new Map<string, number[]>();
     for (const h of cotHistoryRows) {
       if (!trendMap.has(h.assetId)) trendMap.set(h.assetId, []);
@@ -538,7 +572,7 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
       if (!cotScoreByAssetId.has(sc.assetId)) cotScoreByAssetId.set(sc.assetId, sc.cotScore);
     }
 
-    const result: CotAsset[] = COT_ASSETS.map((meta) => {
+    const built = COT_ASSETS.map((meta): Omit<CotAsset, 'dataAsOf' | 'releasedOn'> => {
       // Deferred instruments (SPY, NAS100) — no CFTC ingestion yet.
       if (meta.deferred) {
         return {
@@ -617,6 +651,8 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
         reason: null,
       };
     });
+
+    const result: CotAsset[] = built.map((row) => ({ ...row, dataAsOf, releasedOn }));
 
     res.json({ success: true, data: result });
   } catch (err) {
@@ -834,6 +870,7 @@ async function buildFxPairData(
       scoreHistory: null,
       outcome: 'insufficient_data' as const,
       reason: 'No pair score computed yet for this FX pair',
+      lastUpdated: null,
     };
   }
 
@@ -958,6 +995,7 @@ async function buildFxPairData(
     scoreHistory,
     outcome: 'scored' as const,
     reason: null,
+    lastUpdated: pairScoreRow.scoreDate.toISOString(),
   };
 }
 

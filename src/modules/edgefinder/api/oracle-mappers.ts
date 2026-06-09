@@ -293,7 +293,17 @@ export const EMPTY_INDICATOR_SLOTS = {
   jolts: null as (1 | 0 | -1 | null),
 };
 
-/** Maps pair template rowName to AssetData indicator slot. */
+/**
+ * Maps a pair template row's `rowName` (as stored in `edgefinder_pair_scores.
+ * rowBreakdown`) to the Top-Setups AssetData indicator slot.
+ *
+ * IMPORTANT: these keys MUST match the `pair_template_rows.displayName` values
+ * the pair-score assembly writes into `rowBreakdown` — NOT the labels in the
+ * static `pair-template.config.ts` array (which is superseded at runtime by
+ * `loadPairTemplateFromDb()`). Six Jobs/Rates rows previously mismatched
+ * (e.g. "Employment Change (NFP)" vs "NFP / Employment"), which silently left
+ * the nfp/unemp/claims/jolts/adp/yield columns blank for every FX pair.
+ */
 export const PAIR_ROW_TO_SLOT: Record<string, keyof typeof EMPTY_INDICATOR_SLOTS> = {
   'GDP': 'gdp',
   'Manufacturing PMI': 'pmiM',
@@ -303,12 +313,12 @@ export const PAIR_ROW_TO_SLOT: Record<string, keyof typeof EMPTY_INDICATOR_SLOTS
   'CPI': 'cpi',
   'PPI': 'ppi',
   'PCE': 'pce',
-  'Interest Rate': 'yield',
-  'NFP / Employment': 'nfp',
-  'Unemployment': 'unemp',
-  'Jobless Claims': 'claims',
-  'JOLTS': 'jolts',
-  'ADP': 'adp',
+  'Interest Rates': 'yield',
+  'Employment Change (NFP)': 'nfp',
+  'Unemployment Rate': 'unemp',
+  'Weekly Jobless Claims': 'claims',
+  'JOLTS Openings': 'jolts',
+  'ADP Employment': 'adp',
 };
 
 // ============================================================================

@@ -307,6 +307,8 @@ model NiftyScorecard {
   @@unique([observationDate, vintageDate], name: "nifty_scorecard_observation_vintage_unique")
   @@index([ratingLabel, observationDate(sort: Desc)])
   @@index([observationDate, isCurrent], map: "nifty_scorecards_observation_current_idx")
+  // Hot path: latest current scorecard (getLatestScorecard / velocity / v-bottom).
+  @@index([isCurrent, observationDate(sort: Desc)], map: "nifty_scorecards_current_date_idx")
   @@map("nifty_scorecards")
 }
 
@@ -340,6 +342,8 @@ model EdgefinderScorecard {
   @@index([assetId, observationDate(sort: Desc)])
   @@index([observationDate, totalScore(sort: Desc)])
   @@index([observationDate, isCurrent], map: "edgefinder_scorecards_observation_current_idx")
+  // Hot path: latest current scorecard for a given asset (oracle scorecard/assets).
+  @@index([assetId, isCurrent, observationDate(sort: Desc)], map: "edgefinder_scorecards_asset_current_date_idx")
   @@map("edgefinder_scorecards")
 }
 
@@ -371,6 +375,8 @@ model EdgefinderPairScore {
   @@unique([pairId, scoreDate, vintageDate])
   @@index([pairId, scoreDate(sort: Desc)])
   @@index([scoreDate, isCurrent], map: "edgefinder_pair_scores_score_date_current_idx")
+  // Hot path: latest current pair score for given pairs (oracle assets/fx-scorecard).
+  @@index([pairId, isCurrent, scoreDate(sort: Desc)], map: "edgefinder_pair_scores_pair_current_date_idx")
   @@map("edgefinder_pair_scores")
 }
 
@@ -425,6 +431,8 @@ model CotData {
   @@index([contractCode, reportDate(sort: Desc)])
   @@index([assetId, reportDate(sort: Desc)])
   @@index([vintageDate(sort: Desc)])
+  // Hot path: latest current COT row per asset (oracle cot / scorecard / fx).
+  @@index([assetId, isCurrent, reportDate(sort: Desc)], map: "cot_data_asset_current_date_idx")
   @@map("cot_data")
 }
 
