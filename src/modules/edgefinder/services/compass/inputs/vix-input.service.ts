@@ -1,38 +1,34 @@
 import { logger } from '@core/utils/logger';
-import { yahooClient } from '@core/clients/yahoo/yahoo.client';
+import { eodhdClient } from '@core/clients/eodhd/eodhd.client';
 import { compassInputsRepository } from '@core/repositories/compass-inputs.repository';
 import { compute5DayAverage } from '../compass-calculations';
 import { evaluateVix } from '../compass-bands';
-import { addDays } from './_input-helpers';
+import { addDays, toIsoDate } from './_input-helpers';
 
 const INPUT_CODE = 'VIX_5D_AVG';
-const SYMBOL = '^VIX';
+const SYMBOL = 'VIX.INDX';
 const DAYS_BACK = 15;
 
 export async function ingestVixInput(
   observationDate: Date,
   isValidation: boolean = false,
 ): Promise<void> {
-  const rows = isValidation
-    ? await yahooClient.fetchDailyHistory({
-        symbol: SYMBOL,
-        periodStart: addDays(observationDate, -DAYS_BACK),
-        periodEnd: addDays(observationDate, 1),
-      })
-    : await yahooClient.fetchDailyHistory({
-        symbol: SYMBOL,
-        daysBack: DAYS_BACK,
-      });
+  // EODHD's standard EOD endpoint takes a `from` but no end date; the validation
+  // upper bound is enforced by the post-fetch `date <= observationDate` filter.
+  const fromIso = toIsoDate(
+    isValidation ? addDays(observationDate, -DAYS_BACK) : addDays(new Date(), -DAYS_BACK),
+  );
 
-  const windowed = isValidation
-    ? rows.filter((r) => r.date.getTime() <= observationDate.getTime())
-    : rows;
+  const rows = await eodhdClient.fetchEodSeries(SYMBOL, fromIso);
+
+  const obsIso = toIsoDate(observationDate);
+  const windowed = isValidation ? rows.filter((p) => p.date <= obsIso) : rows;
 
   if (windowed.length === 0) {
-    throw new Error('VIX_5D_AVG: Yahoo returned zero rows');
+    throw new Error('VIX_5D_AVG: EODHD returned zero rows');
   }
 
-  const closes = windowed.map((r) => r.close);
+  const closes = windowed.map((p) => p.value);
   const fiveDayAvg = compute5DayAverage(closes);
   const todayClose = closes[closes.length - 1];
 
@@ -52,9 +48,9 @@ export async function ingestVixInput(
     colorBand,
     subChecks: {
       closes: closes.slice(-5),
-      lastDate: windowed[windowed.length - 1].date.toISOString().slice(0, 10),
+      lastDate: windowed[windowed.length - 1].date,
     },
-    source: 'yahoo',
+    source: 'eodhd',
     isValidation,
   });
 

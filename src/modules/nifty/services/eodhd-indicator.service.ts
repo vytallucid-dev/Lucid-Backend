@@ -32,12 +32,17 @@ interface EodhdIndicatorConfig {
  * THIS map is what makes the NIFTY job NIFTY-aware (and why the client stays
  * reusable by EdgeFinder, which will define its own mapping for its series).
  *
- * Endpoint kind cannot be derived from the symbol alone (e.g. "BRENT" doesn't
- * self-identify as a commodity), so it is declared explicitly here.
+ * Endpoint kind cannot be derived from the symbol alone (e.g. a commodity code
+ * doesn't self-identify as such), so it is declared explicitly here.
+ *
+ * NOTE: Brent (IND_NIFTY_11_BRENT) was removed from this map — it moved off the
+ * EODHD FRED-routed commodity feed (which lagged) to the Crude Price API
+ * (data_source 'crude_price_api', see crude-price-indicator.service.ts). DXY and
+ * USD/INR remain on EODHD. The client's commodity endpoint is left in place as
+ * generic reusable infra for any future EODHD commodity series.
  */
 const EODHD_INDICATOR_CONFIG: Record<string, EodhdIndicatorConfig> = {
   IND_NIFTY_10_DXY: { kind: 'eod', symbol: 'DXY.INDX' },
-  IND_NIFTY_11_BRENT: { kind: 'commodity', symbol: 'BRENT' },
   IND_NIFTY_12_USDINR: { kind: 'eod', symbol: 'USDINR.FOREX' },
 };
 

@@ -47,8 +47,27 @@ import {
   SCORECARD_ASSET_META,
   COT_ASSETS,
 } from './oracle-mappers';
+import { getCompassSnapshot } from '@modules/edgefinder/services/compass/compass-public.service';
 
 export const oracleRouter = Router();
+
+// ============================================================================
+// GET /api/oracle/compass
+// Full Compass snapshot (current regime, 6 input votes, score impact, 30-day
+// audit history) assembled in one batched, indexed read. The classifier writes
+// once per day, so the payload is identical for every user — a short private
+// cache + SWR keeps repeat loads off the DB. Returns data:null before the first
+// classification exists (fresh DB), which the client renders as an empty state.
+// ============================================================================
+oracleRouter.get('/compass', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const snapshot = await getCompassSnapshot();
+    res.set('Cache-Control', 'private, max-age=120, stale-while-revalidate=300');
+    res.json({ success: true, data: snapshot });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ============================================================================
 // JSON breakdown helpers — typed views of Prisma.JsonValue

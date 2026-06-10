@@ -893,11 +893,11 @@ The Compass is a regime classifier that classifies the macro environment as **Ri
 
 | Input Code | Description | Source | Raw Value | Derived Value | Weight |
 |------------|-------------|--------|-----------|---------------|--------|
-| `VIX_5D_AVG` | VIX 5-day average | Yahoo (`^VIX`) | Today's VIX close | 5-day moving average | 1.0 |
+| `VIX_5D_AVG` | VIX 5-day average | EODHD (`VIX.INDX`) | Today's VIX close | 5-day moving average | 1.0 |
 | `HY_OAS` | High-Yield OAS spread | FRED (`BAMLH0A0HYM2`) | Today's OAS level (%) | 30-day change | 1.5 |
 | `YIELD_2S10S` | 2s10s yield curve | FRED (`T10Y2Y`) | Today's spread | 30-day change | 1.5 |
-| `DXY_TREND` | DXY trend vs 50d SMA | Yahoo (`DX-Y.NYB`) | Today's close | % distance from 50d SMA | 1.0 |
-| `GOLD_DXY_CORR` | Gold/DXY 60-day correlation | Yahoo (`GC=F` + `DX-Y.NYB`) | Pearson correlation | Same (correlation) | 1.0 |
+| `DXY_TREND` | DXY trend vs 50d SMA | EODHD (`DXY.INDX`) | Today's close | % distance from 50d SMA | 1.0 |
+| `GOLD_DXY_CORR` | Gold/DXY 60-day correlation | EODHD (`XAUUSD.FOREX` + `DXY.INDX`) | Pearson correlation | Same (correlation) | 1.0 |
 | `US_DATA_STACK` | Composite: CPI+GDP+Jobs | FRED (4 series) | null | null | 2.0 |
 
 **Total weight = 8.0**

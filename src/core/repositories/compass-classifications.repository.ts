@@ -29,9 +29,61 @@ export interface PriorClassificationSnapshot {
   persistenceDaysCount: number;
 }
 
+/** Full current-vintage classification row with Decimal weights coerced to numbers. */
+export interface CompassClassificationRow {
+  classificationDate: Date;
+  candidateRegime: Regime;
+  activeRegime: Regime;
+  persistenceDaysCount: number;
+  crisisOverrideFired: boolean;
+  totalGreenWeight: number;
+  totalYellowWeight: number;
+  totalRedWeight: number;
+  voteBreakdown: Prisma.JsonValue;
+}
+
 function toDecimal2(n: number): Prisma.Decimal {
   return new Prisma.Decimal(n).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 }
+
+interface RawClassificationRow {
+  classificationDate: Date;
+  candidateRegime: string;
+  activeRegime: string;
+  persistenceDaysCount: number;
+  crisisOverrideFired: boolean;
+  totalGreenWeight: Prisma.Decimal;
+  totalYellowWeight: Prisma.Decimal;
+  totalRedWeight: Prisma.Decimal;
+  voteBreakdown: Prisma.JsonValue;
+}
+
+function mapClassificationRow(row: RawClassificationRow): CompassClassificationRow {
+  return {
+    classificationDate: row.classificationDate,
+    candidateRegime: row.candidateRegime as Regime,
+    activeRegime: row.activeRegime as Regime,
+    persistenceDaysCount: row.persistenceDaysCount,
+    crisisOverrideFired: row.crisisOverrideFired,
+    totalGreenWeight: Number(row.totalGreenWeight.toString()),
+    totalYellowWeight: Number(row.totalYellowWeight.toString()),
+    totalRedWeight: Number(row.totalRedWeight.toString()),
+    voteBreakdown: row.voteBreakdown,
+  };
+}
+
+/** Columns needed by the public snapshot — keeps the row payload lean. */
+const PUBLIC_ROW_SELECT = {
+  classificationDate: true,
+  candidateRegime: true,
+  activeRegime: true,
+  persistenceDaysCount: true,
+  crisisOverrideFired: true,
+  totalGreenWeight: true,
+  totalYellowWeight: true,
+  totalRedWeight: true,
+  voteBreakdown: true,
+} as const;
 
 function decimalEquals(a: Prisma.Decimal, b: Prisma.Decimal): boolean {
   return a.equals(b);
@@ -188,5 +240,39 @@ export const compassClassificationsRepository = {
       candidateRegime: row.candidateRegime as Regime,
       persistenceDaysCount: row.persistenceDaysCount,
     };
+  },
+
+  /**
+   * Latest current-vintage classification (the regime in effect "now").
+   * Backed by the [classificationDate desc] index — single indexed row read.
+   */
+  async getLatest(
+    isValidation: boolean = false,
+  ): Promise<CompassClassificationRow | null> {
+    const row = await prisma.compassClassification.findFirst({
+      where: { isCurrent: true, isValidation },
+      orderBy: { classificationDate: 'desc' },
+      select: PUBLIC_ROW_SELECT,
+    });
+    return row ? mapClassificationRow(row) : null;
+  },
+
+  /**
+   * Most recent `limit` current-vintage classifications, newest first. Powers
+   * the 30-day audit log and the days-stable streak from a single indexed scan;
+   * voteBreakdown carries each day's per-input color bands, so no per-day input
+   * join is needed.
+   */
+  async getRecent(
+    limit: number,
+    isValidation: boolean = false,
+  ): Promise<CompassClassificationRow[]> {
+    const rows = await prisma.compassClassification.findMany({
+      where: { isCurrent: true, isValidation },
+      orderBy: { classificationDate: 'desc' },
+      take: limit,
+      select: PUBLIC_ROW_SELECT,
+    });
+    return rows.map(mapClassificationRow);
   },
 };

@@ -1,12 +1,12 @@
 import { logger } from '@core/utils/logger';
-import { yahooClient } from '@core/clients/yahoo/yahoo.client';
+import { eodhdClient } from '@core/clients/eodhd/eodhd.client';
 import { compassInputsRepository } from '@core/repositories/compass-inputs.repository';
 import {
   alignByDate,
   computePearsonCorrelation,
 } from '../compass-calculations';
 import { evaluateGoldDxyCorrelation } from '../compass-bands';
-import { addDays } from './_input-helpers';
+import { addDays, toIsoDate } from './_input-helpers';
 
 const INPUT_CODE = 'GOLD_DXY_CORR';
 const ROLLING_WINDOW = 60;
@@ -16,27 +16,31 @@ export async function ingestGoldDxyCorrInput(
   observationDate: Date,
   isValidation: boolean = false,
 ): Promise<void> {
-  const periodStart = addDays(observationDate, -DAYS_BACK);
-  const periodEnd = addDays(observationDate, 1);
+  // Both symbols share one `from`; EODHD's EOD endpoint has no end date, so the
+  // validation upper bound is enforced by the post-fetch filter below.
+  const fromIso = toIsoDate(
+    isValidation ? addDays(observationDate, -DAYS_BACK) : addDays(new Date(), -DAYS_BACK),
+  );
 
   const [goldRows, dxyRows] = await Promise.all([
-    isValidation
-      ? yahooClient.fetchDailyHistory({ symbol: 'GC=F', periodStart, periodEnd })
-      : yahooClient.fetchDailyHistory({ symbol: 'GC=F', daysBack: DAYS_BACK }),
-    isValidation
-      ? yahooClient.fetchDailyHistory({ symbol: 'DX-Y.NYB', periodStart, periodEnd })
-      : yahooClient.fetchDailyHistory({ symbol: 'DX-Y.NYB', daysBack: DAYS_BACK }),
+    eodhdClient.fetchEodSeries('XAUUSD.FOREX', fromIso),
+    eodhdClient.fetchEodSeries('DXY.INDX', fromIso),
   ]);
 
-  const goldFiltered = isValidation
-    ? goldRows.filter((r) => r.date.getTime() <= observationDate.getTime())
-    : goldRows;
-  const dxyFiltered = isValidation
-    ? dxyRows.filter((r) => r.date.getTime() <= observationDate.getTime())
-    : dxyRows;
+  const obsIso = toIsoDate(observationDate);
+  const goldFiltered = isValidation ? goldRows.filter((p) => p.date <= obsIso) : goldRows;
+  const dxyFiltered = isValidation ? dxyRows.filter((p) => p.date <= obsIso) : dxyRows;
 
-  const goldSeries = goldFiltered.map((r) => ({ date: r.date, value: r.close }));
-  const dxySeries = dxyFiltered.map((r) => ({ date: r.date, value: r.close }));
+  // EODHD returns date as a "YYYY-MM-DD" string; alignByDate keys on Date objects,
+  // so convert to UTC-midnight Dates (round-trips through its toISOString slice).
+  const goldSeries = goldFiltered.map((p) => ({
+    date: new Date(`${p.date}T00:00:00.000Z`),
+    value: p.value,
+  }));
+  const dxySeries = dxyFiltered.map((p) => ({
+    date: new Date(`${p.date}T00:00:00.000Z`),
+    value: p.value,
+  }));
 
   const aligned = alignByDate(goldSeries, dxySeries);
 
@@ -65,7 +69,7 @@ export async function ingestGoldDxyCorrInput(
     subChecks: {
       windowDays: ROLLING_WINDOW,
       alignedRowCount: aligned.xs.length,
-      symbols: { gold: 'GC=F', dxy: 'DX-Y.NYB' },
+      symbols: { gold: 'XAUUSD.FOREX', dxy: 'DXY.INDX' },
     },
     source: 'derived',
     isValidation,

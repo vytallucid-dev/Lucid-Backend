@@ -21,6 +21,11 @@ const envSchema = z.object({
 
   EODHD_API_KEY: z.string().min(1, 'EODHD_API_KEY is required'),
 
+  // Crude Price API (https://www.crudepriceapi.com) — sources NIFTY Brent (Ind 11).
+  // Replaces the FRED-routed EODHD commodity feed, which lagged. Free tier: 100
+  // requests/month; only the /latest endpoint returns usable data.
+  CRUDE_PRICE_API_KEY: z.string().min(1, 'CRUDE_PRICE_API_KEY is required'),
+
   ALLOWED_ORIGINS: z
     .string()
     .default('http://localhost:3000')

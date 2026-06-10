@@ -152,9 +152,11 @@ async function seedIndicators(): Promise<void> {
       tool: 'nifty' as const,
       frequency: 'daily' as const,
       unit: 'USD_per_barrel',
-      // Migrated from FRED (DCOILBRENTEU) to EODHD commodities endpoint (BRENT).
-      dataSource: 'eodhd' as const,
-      sourceSeriesId: 'BRENT',
+      // Migrated FRED (DCOILBRENTEU) -> EODHD commodities (BRENT) -> Crude Price API
+      // (BRENT_CRUDE_USD, /latest spot). EODHD's commodity feed was FRED-routed and
+      // lagged; the Crude Price API gives fresh market-sourced spot prices.
+      dataSource: 'crude_price_api' as const,
+      sourceSeriesId: 'BRENT_CRUDE_USD',
       displayOrder: 11,
       compositeGroup: 'external' as const,
     },

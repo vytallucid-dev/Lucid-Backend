@@ -1,0 +1,13 @@
+-- AlterEnum
+-- Add 'crude_price_api' to the DataSource enum. The Crude Price API
+-- (https://www.crudepriceapi.com) now sources NIFTY Brent (IND_NIFTY_11_BRENT),
+-- replacing the EODHD FRED-routed commodity feed which lagged (froze ~June 1).
+--
+-- This is intentionally a standalone migration containing ONLY the enum addition.
+-- Postgres cannot use a newly added enum value in the SAME transaction that adds
+-- it ("unsafe use of new value of enum type"), so the data UPDATE that flips the
+-- Brent indicator row to 'crude_price_api' lives in the next migration
+-- (20260610130100_nifty_brent_to_crude_price_api), which runs in its own
+-- transaction after this one has committed. IF NOT EXISTS makes it idempotent.
+-- Mirrors the eodhd / forex_factory enum-add precedent.
+ALTER TYPE "DataSource" ADD VALUE IF NOT EXISTS 'crude_price_api';

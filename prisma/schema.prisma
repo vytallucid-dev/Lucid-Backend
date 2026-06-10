@@ -55,6 +55,7 @@ enum DataSource {
   jblanked // dead value, no rows use it, kept for enum stability
   forex_factory
   eodhd
+  crude_price_api
 }
 
 enum ScoringRuleType {

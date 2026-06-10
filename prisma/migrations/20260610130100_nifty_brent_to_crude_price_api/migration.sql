@@ -1,0 +1,21 @@
+-- Migrate NIFTY Brent (IND_NIFTY_11_BRENT) from EODHD to the Crude Price API.
+--
+-- Flipping data_source to 'crude_price_api' is what REMOVES Brent from the EODHD
+-- daily fetch: fetchAllEodhdIndicators() selects `WHERE data_source = 'eodhd'`, so
+-- once the row is 'crude_price_api' it is no longer fetched by the EODHD job. The
+-- new Crude Price job (crude-price-fetch.job.ts) fetches it explicitly by code.
+-- source_series_id is updated from the EODHD symbol ('BRENT') to the Crude Price
+-- API code ('BRENT_CRUDE_USD') for traceability.
+--
+--   IND_NIFTY_11_BRENT  BRENT (EODHD commodities) -> BRENT_CRUDE_USD (Crude Price API /latest)
+--
+-- This runs in its own transaction (separate migration from the enum addition) so
+-- the 'crude_price_api' value is already committed and safe to use here. Mirrors
+-- the *_nifty_price_indicators_to_eodhd precedent.
+--
+-- NOTE: existing Brent data points (~480 days of EODHD history through ~June 1) are
+-- intentionally LEFT IN PLACE. They supply the older end of the 10-day rolling
+-- window while /latest appends today's fresh price; the window self-heals to fresh
+-- market data over ~10 trading days. No backfill, no data clear.
+-- DXY and USD/INR are untouched and remain on EODHD.
+UPDATE "indicators" SET "data_source" = 'crude_price_api', "source_series_id" = 'BRENT_CRUDE_USD' WHERE "code" = 'IND_NIFTY_11_BRENT';

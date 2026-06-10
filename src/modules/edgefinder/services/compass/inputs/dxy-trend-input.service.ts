@@ -1,5 +1,5 @@
 import { logger } from '@core/utils/logger';
-import { yahooClient } from '@core/clients/yahoo/yahoo.client';
+import { eodhdClient } from '@core/clients/eodhd/eodhd.client';
 import { compassInputsRepository } from '@core/repositories/compass-inputs.repository';
 import {
   compute50DaySMA,
@@ -7,34 +7,30 @@ import {
   compute5DayPctChange,
 } from '../compass-calculations';
 import { evaluateDxyTrend } from '../compass-bands';
-import { addDays } from './_input-helpers';
+import { addDays, toIsoDate } from './_input-helpers';
 
 const INPUT_CODE = 'DXY_TREND';
-const SYMBOL = 'DX-Y.NYB';
+const SYMBOL = 'DXY.INDX';
 const DAYS_BACK = 90;
 
 export async function ingestDxyTrendInput(
   observationDate: Date,
   isValidation: boolean = false,
 ): Promise<void> {
-  const rows = isValidation
-    ? await yahooClient.fetchDailyHistory({
-        symbol: SYMBOL,
-        periodStart: addDays(observationDate, -DAYS_BACK),
-        periodEnd: addDays(observationDate, 1),
-      })
-    : await yahooClient.fetchDailyHistory({
-        symbol: SYMBOL,
-        daysBack: DAYS_BACK,
-      });
+  // EODHD's standard EOD endpoint takes a `from` but no end date; the validation
+  // upper bound is enforced by the post-fetch `date <= observationDate` filter.
+  const fromIso = toIsoDate(
+    isValidation ? addDays(observationDate, -DAYS_BACK) : addDays(new Date(), -DAYS_BACK),
+  );
 
-  const windowed = isValidation
-    ? rows.filter((r) => r.date.getTime() <= observationDate.getTime())
-    : rows;
+  const rows = await eodhdClient.fetchEodSeries(SYMBOL, fromIso);
 
-  const closes = windowed.map((r) => r.close);
+  const obsIso = toIsoDate(observationDate);
+  const windowed = isValidation ? rows.filter((p) => p.date <= obsIso) : rows;
+
+  const closes = windowed.map((p) => p.value);
   if (closes.length === 0) {
-    throw new Error('DXY_TREND: Yahoo returned zero rows');
+    throw new Error('DXY_TREND: EODHD returned zero rows');
   }
 
   const todayClose = closes[closes.length - 1];
@@ -61,7 +57,7 @@ export async function ingestDxyTrendInput(
       fiveDayPctChange,
       symbol: SYMBOL,
     },
-    source: 'yahoo',
+    source: 'eodhd',
     isValidation,
   });
 

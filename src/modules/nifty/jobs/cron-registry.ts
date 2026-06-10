@@ -4,6 +4,7 @@ import { runScorecardAssemblyCron } from './scorecard-assembly.cron';
 import { runNiftyInd9BridgeCron } from './ind9-bridge.job';
 import { registerFredFetchCron } from './fred-fetch.job';
 import { registerEodhdFetchCron } from './eodhd-fetch.job';
+import { registerCrudePriceFetchCron } from './crude-price-fetch.job';
 import { registerNseVixCron } from './nse-vix.job';
 import { registerNseFiiDiiCron } from './nse-fii-dii.job';
 import { registerNseParticipantOiCron } from './nse-participant-oi.job';
@@ -43,9 +44,13 @@ export function registerNiftyCrons(): void {
   // Invoke existing factory-style cron registrations (they configure their
   // own schedule/timezone/scheduled flags internally per file).
   registerFredFetchCron();
-  // EODHD price fetch (DXY, Brent, USD/INR) — 02:30 UTC, same slot FRED used for
-  // these three. FRED cron stays for US02Y / EdgeFinder macro series; the two coexist.
+  // EODHD price fetch (DXY, USD/INR) — 02:30 UTC, same slot FRED used for these.
+  // FRED cron stays for US02Y / EdgeFinder macro series; the two coexist.
   registerEodhdFetchCron();
+  // Crude Price API fetch (Brent only) — 02:30 UTC, same slot as the EODHD price
+  // fetch. Brent moved off EODHD's lagging FRED-routed commodity feed; runs daily
+  // before the 14:30 UTC scorecard assembly.
+  registerCrudePriceFetchCron();
   registerNseVixCron();
   registerNseFiiDiiCron();
   registerNseParticipantOiCron();

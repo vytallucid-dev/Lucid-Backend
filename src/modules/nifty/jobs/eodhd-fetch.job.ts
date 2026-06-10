@@ -8,11 +8,12 @@ const JOB_NAME = 'eodhd_fetch';
 const CONCURRENT_GUARD_MINUTES = 5;
 
 /**
- * Daily EODHD fetch handler for the three NIFTY price indicators (DXY, Brent,
- * USD/INR). Wraps `fetchAllEodhdIndicators` with an orchestrator-level fetch_log
- * entry (separate from the per-indicator `fetch_eodhd_<code>` rows written by the
+ * Daily EODHD fetch handler for the two NIFTY price indicators (DXY, USD/INR).
+ * Brent moved off EODHD to the Crude Price API (see crude-price-fetch.job.ts).
+ * Wraps `fetchAllEodhdIndicators` with an orchestrator-level fetch_log entry
+ * (separate from the per-indicator `fetch_eodhd_<code>` rows written by the
  * underlying service). The orchestrator row (`eodhd_fetch`) is what the
- * concurrent-execution guard checks. Three API calls per run — well under the cap.
+ * concurrent-execution guard checks. Two API calls per run — well under the cap.
  *
  * Called by BOTH the cron registration below and the manual /api/admin/jobs/run
  * trigger (job_name 'eodhd_fetch') — one job function, two callers.

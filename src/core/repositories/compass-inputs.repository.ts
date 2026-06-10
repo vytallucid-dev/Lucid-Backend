@@ -2,7 +2,7 @@ import { Prisma, DataSource } from '@prisma/client';
 import { prisma } from '@core/db/prisma';
 
 export type ColorBand = 'GREEN' | 'YELLOW' | 'RED';
-export type CompassSource = Extract<DataSource, 'yahoo' | 'fred' | 'derived'>;
+export type CompassSource = Extract<DataSource, 'eodhd' | 'fred' | 'derived'>;
 
 export interface UpsertCompassInputInput {
   observationDate: Date;

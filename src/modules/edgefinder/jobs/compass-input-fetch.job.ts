@@ -10,7 +10,7 @@ const CONCURRENT_GUARD_MINUTES = 10;
  * Daily Compass-input fetch. Orchestrates ingestion of the 6 Lucid Compass
  * inputs (VIX, HY OAS, 2s10s, DXY trend, Gold/DXY correlation, US data stack).
  * Sequenced 22:30 UTC daily — after US market close (~21:00 UTC) and after
- * Yahoo + FRED have published end-of-day values.
+ * EODHD + FRED have published end-of-day values.
  */
 export async function runCompassInputFetch(): Promise<void> {
   const alreadyRunning = await isJobRunning(JOB_NAME, CONCURRENT_GUARD_MINUTES);
