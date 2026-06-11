@@ -20,15 +20,35 @@ userRouter.use(requireAuth);
 userRouter.get('/me', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { sub, email } = req.user!;
-    const fullName = req.user!.user_metadata?.full_name as string | undefined;
+
+    // The name captured at signup lives in user_metadata. Accept the common
+    // keys (full_name is what this app's signup sets) and never fall back to
+    // the email.
+    const meta = req.user!.user_metadata ?? {};
+    const rawName = (meta.full_name ?? meta.name ?? meta.display_name) as unknown;
+    const name = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : null;
+
+    // The auth.users → public.users trigger may have already created the row
+    // (historically with a missing/incorrect display name). Backfill the name
+    // on first load and repair any row whose display name is blank or was left
+    // as the email — but never clobber a real, user-set name.
+    const existing = await prisma.user.findUnique({
+      where: { id: sub },
+      select: { displayName: true },
+    });
+    const displayNameNeedsFix =
+      !existing ||
+      existing.displayName == null ||
+      existing.displayName.trim() === '' ||
+      existing.displayName === email;
 
     const dbUser = await prisma.user.upsert({
       where: { id: sub },
-      update: {}, // never overwrite existing data on subsequent calls
+      update: displayNameNeedsFix && name ? { displayName: name } : {},
       create: {
         id: sub,
         email,
-        displayName: fullName ?? null,
+        displayName: name,
       },
       select: {
         id: true,

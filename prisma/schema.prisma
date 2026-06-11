@@ -528,3 +528,156 @@ model CompassValidationReport {
   @@index([generatedAt(sort: Desc)])
   @@map("compass_validation_reports")
 }
+
+// =========================================================
+// TRADING HUB (Dashboard + Trading Hub frontend sections)
+//
+// Per-user trading journal. Ownership is enforced at the
+// application layer via `userId` (the Supabase user UUID),
+// matching the codebase's existing app-layer multi-tenancy.
+// No FK to `users` is declared so the User model is left
+// untouched. Constrained string fields (direction, status,
+// conviction, etc.) carry the exact frontend literal values
+// and are validated by Zod at the API boundary.
+// =========================================================
+
+model TradingAccount {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id") @db.Uuid
+  accountType     String   @map("account_type") @db.VarChar(20) // personal | demo | prop_firm
+  accountName     String   @map("account_name") @db.VarChar(120)
+  accountSize     Decimal  @map("account_size") @db.Decimal(20, 2) // starting balance
+  currentBalance  Decimal  @map("current_balance") @db.Decimal(20, 2)
+  currency        String   @default("USD") @db.VarChar(8)
+  status          String   @default("Active") @db.VarChar(20) // Active | Passed | Blown | Closed
+  startingDate    DateTime @map("starting_date") @db.Date
+  broker          String?  @db.VarChar(120)
+  profitGoalPct   Decimal? @map("profit_goal_pct") @db.Decimal(8, 2)
+  propFirm        String?  @map("prop_firm") @db.VarChar(120)
+  stage           String?  @db.VarChar(20) // Stage 1 | Stage 2 | Funded | Blown
+  maxDrawdownPct  Decimal? @map("max_drawdown_pct") @db.Decimal(8, 2)
+  profitTargetPct Decimal? @map("profit_target_pct") @db.Decimal(8, 2)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  trades    Trade[]
+  cashFlows CashFlow[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, status])
+  @@map("trading_accounts")
+}
+
+model Trade {
+  id                String    @id @default(uuid())
+  userId            String    @map("user_id") @db.Uuid
+  accountId         String    @map("account_id")
+  model             String    @db.VarChar(60)
+  pair              String    @db.VarChar(20)
+  direction         String    @db.VarChar(8) // Buy | Sell
+  entryPrice        Decimal   @map("entry_price") @db.Decimal(20, 6)
+  slPrice           Decimal   @map("sl_price") @db.Decimal(20, 6)
+  firstTpPrice      Decimal?  @map("first_tp_price") @db.Decimal(20, 6)
+  mainTpPrice       Decimal   @map("main_tp_price") @db.Decimal(20, 6)
+  partialExitPrice  Decimal?  @map("partial_exit_price") @db.Decimal(20, 6)
+  partialExitLotPct Decimal?  @map("partial_exit_lot_pct") @db.Decimal(8, 2)
+  mainExitPrice     Decimal?  @map("main_exit_price") @db.Decimal(20, 6)
+  lotSize           Decimal   @map("lot_size") @db.Decimal(12, 4)
+  totalPips         Decimal   @default(0) @map("total_pips") @db.Decimal(12, 2)
+  riskPct           Decimal   @map("risk_pct") @db.Decimal(8, 2)
+  conviction        String    @db.VarChar(10) // Low | Medium | High
+  blendedPnl        Decimal   @default(0) @map("blended_pnl") @db.Decimal(20, 2)
+  blendedRr         Decimal   @default(0) @map("blended_rr") @db.Decimal(12, 2)
+  exitType          String    @default("TP") @map("exit_type") @db.VarChar(16) // TP | SL | Manual | Partial+TP | Partial+SL | BE
+  dateOpened        DateTime  @map("date_opened")
+  dateClosed        DateTime? @map("date_closed")
+  session           String    @db.VarChar(24)
+  fundamentalScore  Int?      @map("fundamental_score") @db.SmallInt
+  screenshots       String[]
+  psychology        String?   @db.VarChar(120)
+  notes             String?
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  account TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  // Hot path: list a user's trades newest-first; filter by account.
+  @@index([userId, dateOpened(sort: Desc)])
+  @@index([userId, accountId])
+  @@index([accountId])
+  @@map("trades")
+}
+
+model PlannedTrade {
+  id                 String   @id @default(uuid())
+  userId             String   @map("user_id") @db.Uuid
+  pair               String   @db.VarChar(20)
+  model              String   @db.VarChar(60)
+  direction          String   @db.VarChar(8) // Buy | Sell
+  plannedEntry       Decimal  @map("planned_entry") @db.Decimal(20, 6)
+  plannedSl          Decimal  @map("planned_sl") @db.Decimal(20, 6)
+  plannedFirstTp     Decimal? @map("planned_first_tp") @db.Decimal(20, 6)
+  plannedMainTp      Decimal  @map("planned_main_tp") @db.Decimal(20, 6)
+  plannedRiskPct     Decimal  @map("planned_risk_pct") @db.Decimal(8, 2)
+  conviction         String   @db.VarChar(10) // Low | Medium | High
+  status             String   @default("Watching") @db.VarChar(16) // Watching | Ready | Invalidated | Cancelled
+  dateAdded          DateTime @default(now()) @map("date_added")
+  notes              String?
+  screenshots        String[]
+  currentMarketPrice Decimal  @map("current_market_price") @db.Decimal(20, 6)
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, status])
+  @@index([userId, dateAdded(sort: Desc)])
+  @@map("planned_trades")
+}
+
+model CashFlow {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id") @db.Uuid
+  accountId String   @map("account_id")
+  type      String   @db.VarChar(16) // deposit | withdrawal | payout
+  amount    Decimal  @db.Decimal(20, 2) // positive magnitude; `type` carries direction
+  date      DateTime @db.Date
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  account TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, date])
+  @@index([userId])
+  @@map("cash_flows")
+}
+
+model TradingModel {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id") @db.Uuid
+  name        String   @db.VarChar(60)
+  description String   @default("") @db.VarChar(200)
+  rules       String   @default("")
+  status      String   @default("Active") @db.VarChar(12) // Active | Inactive
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("trading_models")
+}
+
+model TradingPair {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id") @db.Uuid
+  symbol      String   @db.VarChar(20)
+  displayName String   @map("display_name") @db.VarChar(40)
+  flagA       String   @map("flag_a") @db.VarChar(16)
+  flagB       String   @map("flag_b") @db.VarChar(16)
+  pipValue    Decimal  @map("pip_value") @db.Decimal(12, 4)
+  status      String   @default("Active") @db.VarChar(12) // Active | Inactive
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, symbol])
+  @@index([userId])
+  @@map("trading_pairs")
+}

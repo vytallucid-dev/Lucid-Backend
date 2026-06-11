@@ -15,6 +15,7 @@ import { niftyPublicRouter } from '@modules/nifty/routes/nifty-public.routes';
 import { niftyPublicV2Router } from '@modules/nifty/api/nifty.routes';
 import { edgefinderRouter } from '@modules/edgefinder/routes';
 import { oracleRouter } from '@modules/edgefinder/api/oracle.routes';
+import { tradingRouter } from '@modules/trading/routes';
 
 export function createApp(): Express {
   const app = express();
@@ -47,6 +48,7 @@ export function createApp(): Express {
   app.use('/api/nifty', requireAuth, niftyPublicV2Router);
   app.use('/api/oracle', requireAuth, oracleRouter);
   app.use('/api/edgefinder', edgefinderRouter);
+  app.use('/api/trading', requireAuth, tradingRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/user', userRouter);
 
