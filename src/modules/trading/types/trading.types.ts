@@ -87,7 +87,7 @@ export const createTradeSchema = z
     lot_size: z.number().finite().positive(),
     risk_pct: z.number().finite().nonnegative(),
     conviction: z.enum(CONVICTIONS),
-    fundamental_score: z.number().int().min(1).max(10).optional().nullable(),
+    fundamental_score: z.number().int().min(-50).max(50).optional().nullable(),
     psychology: z.string().trim().max(120).optional().nullable(),
     notes: z.string().trim().max(5000).optional().nullable(),
     screenshots: z.array(z.string()).max(20).optional(),
