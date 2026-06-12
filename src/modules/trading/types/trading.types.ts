@@ -146,6 +146,7 @@ export const createPlannedSchema = z.object({
   notes: z.string().trim().max(5000).optional().nullable(),
   screenshots: z.array(z.string()).max(20).optional(),
   current_market_price: z.number().finite().optional(),
+  date_added: dateTimeLike.optional(),
 });
 
 export const updatePlannedSchema = z.object({
@@ -162,6 +163,7 @@ export const updatePlannedSchema = z.object({
   notes: z.string().trim().max(5000).optional().nullable(),
   screenshots: z.array(z.string()).max(20).optional(),
   current_market_price: z.number().finite().optional(),
+  date_added: dateTimeLike.optional(),
 });
 
 // ─── Models ──────────────────────────────────────────────────────────────────

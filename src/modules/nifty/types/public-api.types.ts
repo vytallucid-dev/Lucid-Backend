@@ -44,6 +44,10 @@ export interface PublicIndicator {
   value: string; // pre-formatted display string e.g. '54.6', '₹2.10T', 'Raw -6'
   magnitude: string; // narrative context line e.g. 'vs prior 3.40%'
   trajectory_3m_avg?: string; // only set for Ind 3 (India CPI)
+  // The rolling aggregate (window avg / % change) the score was computed from,
+  // for indicators scored on a window rather than the latest reading
+  // (Ind 6, 7, 10, 11, 12). Shown alongside the latest value.
+  score_basis?: { label: string; value: string };
   last_change_date: string; // ISO 'YYYY-MM-DD'
   prev_score?: PublicIndicatorScore;
   outcome: 'scored' | 'carry_forward' | 'insufficient_data';

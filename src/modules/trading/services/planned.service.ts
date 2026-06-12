@@ -46,6 +46,8 @@ export async function createPlanned(
       notes: input.notes ?? null,
       screenshots: input.screenshots ?? [],
       currentMarketPrice: dec(input.current_market_price ?? input.planned_entry),
+      // Defaults to now() at the DB level when the user doesn't pick a date.
+      ...(input.date_added ? { dateAdded: new Date(input.date_added) } : {}),
     },
   });
   return toPlannedDto(created);
@@ -74,6 +76,7 @@ export async function updatePlanned(
   if (input.screenshots !== undefined) data.screenshots = input.screenshots;
   if (input.current_market_price !== undefined)
     data.currentMarketPrice = dec(input.current_market_price);
+  if (input.date_added !== undefined) data.dateAdded = new Date(input.date_added);
 
   const updated = await prisma.plannedTrade.update({ where: { id }, data });
   return toPlannedDto(updated);

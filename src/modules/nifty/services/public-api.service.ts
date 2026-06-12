@@ -17,6 +17,7 @@ import {
 import {
   formatIndicatorValue,
   formatMagnitude,
+  formatScoreBasis,
   describeDataSource,
   indicatorOutputRange,
   indicatorShortName,
@@ -145,9 +146,8 @@ async function resolveIndicators(
   if (indicators.length === 0) return [];
 
   const indicatorIds = indicators.map((i) => i.id);
-  const cpiIndicator = indicators.find((i) => i.code === 'IND_NIFTY_03_CPI');
 
-  const [latestDataPoints, priorDataPoints, priorScores, cpiScore] = await Promise.all([
+  const [latestDataPoints, priorDataPoints, priorScores, currentScores] = await Promise.all([
     prisma.$queryRaw<LatestDataPointRow[]>`
       SELECT DISTINCT ON (dp.indicator_id)
         dp.indicator_id,
@@ -193,12 +193,13 @@ async function resolveIndicators(
         AND s.observation_date < ${observationDate}::date
       ORDER BY s.indicator_id, s.observation_date DESC
     `,
-    cpiIndicator
-      ? prisma.score.findFirst({
-          where: { indicatorId: cpiIndicator.id, observationDate },
-          orderBy: { computedAt: 'desc' },
-        })
-      : Promise.resolve(null),
+    // Current-date score rows for ALL indicators — their computationMetadata
+    // carries the rolling aggregate (avg / % change) used to score, surfaced
+    // as `trajectory_3m_avg` (CPI) and `score_basis` (rolling indicators).
+    prisma.score.findMany({
+      where: { indicatorId: { in: indicatorIds }, observationDate },
+      orderBy: { computedAt: 'desc' },
+    }),
   ]);
 
   const latestByIndicator = new Map<string, LatestDataPointRow>(
@@ -210,6 +211,12 @@ async function resolveIndicators(
   const priorScoreByIndicator = new Map<string, PriorScoreRow>(
     priorScores.map((r) => [r.indicator_id, r]),
   );
+  // Keep the latest-computed score row per indicator (findMany is ordered by
+  // computedAt desc, so the first one seen wins).
+  const currentScoreByIndicator = new Map<string, (typeof currentScores)[number]>();
+  for (const s of currentScores) {
+    if (!currentScoreByIndicator.has(s.indicatorId)) currentScoreByIndicator.set(s.indicatorId, s);
+  }
 
   const results: PublicIndicator[] = [];
 
@@ -237,15 +244,20 @@ async function resolveIndicators(
     const score = breakdownEntry?.score ?? null;
     const lastChangeDate = currentDp ? toIsoDate(currentDp.observation_date) : '';
 
-    // Extract trajectory_3m_avg for CPI from the score's computationMetadata
+    // Pull the aggregate the score was computed from out of the current score's
+    // computationMetadata: trajectory (CPI) and score_basis (rolling indicators).
+    // Suppressed on carry-forward days, where the metadata holds no fresh window.
+    const currentScore = currentScoreByIndicator.get(ind.id);
+    const scoreMeta = (currentScore?.computationMetadata ?? {}) as Record<string, unknown>;
+
     let trajectory3mAvg: string | undefined;
-    if (ind.code === 'IND_NIFTY_03_CPI') {
-      const cpiMeta = (cpiScore?.computationMetadata ?? {}) as {
-        threeMonthAvg?: number;
-      };
-      if (typeof cpiMeta.threeMonthAvg === 'number') {
-        trajectory3mAvg = `${cpiMeta.threeMonthAvg.toFixed(2)}%`;
-      }
+    if (ind.code === 'IND_NIFTY_03_CPI' && typeof scoreMeta.threeMonthAvg === 'number') {
+      trajectory3mAvg = `${(scoreMeta.threeMonthAvg as number).toFixed(2)}%`;
+    }
+
+    let scoreBasis: { label: string; value: string } | undefined;
+    if (!isCarryForward) {
+      scoreBasis = formatScoreBasis(ind.code, scoreMeta) ?? undefined;
     }
 
     const item: PublicIndicator = {
@@ -262,6 +274,7 @@ async function resolveIndicators(
       flags: breakdownEntry?.flags ?? [],
       ...(breakdownEntry?.reason ? { reason: breakdownEntry.reason } : {}),
       ...(trajectory3mAvg ? { trajectory_3m_avg: trajectory3mAvg } : {}),
+      ...(scoreBasis ? { score_basis: scoreBasis } : {}),
       ...(priorScore !== null ? { prev_score: asScore(priorScore.score) } : {}),
     };
 

@@ -134,6 +134,54 @@ export function formatMagnitude(
 }
 
 /**
+ * For indicators whose score is driven by a rolling aggregate (a window
+ * average, ratio, or % change) rather than the latest single reading, produce
+ * the "score basis" — the aggregate value the score was actually computed from,
+ * plus a short label. The card already shows the latest reading; this surfaces
+ * the number that earned the score next to it.
+ *
+ * Reads the aggregate out of the score's `computationMetadata`, which each
+ * rolling handler populates (`rollingAvg` for rolling_tiered / ratio handlers,
+ * `pctChange` for the rolling-pct handlers). Returns null when the indicator
+ * isn't aggregate-based or the metadata is missing.
+ */
+export function formatScoreBasis(
+  indicatorCode: string,
+  metadata: Record<string, unknown>,
+): { label: string; value: string } | null {
+  const rollingAvg = typeof metadata.rollingAvg === 'number' ? metadata.rollingAvg : null;
+  const pctChange = typeof metadata.pctChange === 'number' ? metadata.pctChange : null;
+  const lookbackDays = typeof metadata.lookbackDays === 'number' ? metadata.lookbackDays : null;
+
+  switch (indicatorCode) {
+    case 'IND_NIFTY_06_FII_FLOW':
+      // 10-day rolling average of daily FII cash flow (₹ Cr).
+      if (rollingAvg === null) return null;
+      return {
+        label: `${lookbackDays ?? 10}-day avg`,
+        value: formatIndicatorValue(indicatorCode, rollingAvg),
+      };
+
+    case 'IND_NIFTY_07_DII_ABSORPTION':
+      // 5-session rolling average absorption ratio (FII-net-seller days only).
+      if (rollingAvg === null) return null;
+      return { label: '5-session avg', value: rollingAvg.toFixed(3) };
+
+    case 'IND_NIFTY_10_DXY':
+    case 'IND_NIFTY_11_BRENT':
+    case 'IND_NIFTY_12_USDINR': {
+      // Rolling % change over the lookback window — the value that is scored.
+      if (pctChange === null) return null;
+      const sign = pctChange > 0 ? '+' : '';
+      return { label: `${lookbackDays ?? 10}-day change`, value: `${sign}${pctChange.toFixed(2)}%` };
+    }
+
+    default:
+      return null;
+  }
+}
+
+/**
  * Map indicator dataSource to a friendly display string.
  */
 export function describeDataSource(dataSource: string): string {
