@@ -187,10 +187,25 @@ const SCORING_RULES_V2: Record<
     ruleDefinition: {
       type: 'threshold_bands',
       metric: 'long_pct',
+      // long_pct = FII Future Index Long / (Long + Short) * 100, a 0-100 long-SHARE
+      // percentage (NOT a raw long/short ratio). The threshold_bands handler treats
+      // min as inclusive (>=) and max as exclusive (<), so these bands score:
+      //   value >= 50        -> +1   (ratio > 1.0, net long)
+      //   28.6 <= value < 50 ->  0   (ratio 0.4 .. 1.0, neutral)
+      //   value < 28.6       -> -1   (ratio < 0.4, heavily net short)
+      //
+      // Recalibrated from 45/55 (which assumed a 50%-balanced center). FII index-
+      // futures long share is structurally skewed toward shorts (FIIs hedge cash
+      // longs with futures shorts), so it sits below 45% in essentially all regimes
+      // and the old bands pinned Ind 13 permanently at -1 (dead signal). New bands
+      // center the neutral zone on the metric's real operating range. Reference:
+      // historical FII long/short ratio 0.15 (Dec 2024 bearish extreme) to 5+
+      // (strong-bull extreme); crossover to net-long = ratio 1.0 = 50% share.
+      // 50/28.6 thresholds derive from ratio 1.0 and 0.4 — not fit to current data.
       bands: [
-        { min: 55.0, max: null, score: 1 },
-        { min: 45.0, max: 55.0, score: 0 },
-        { min: null, max: 45.0, score: -1 },
+        { min: 50.0, max: null, score: 1 },
+        { min: 28.6, max: 50.0, score: 0 },
+        { min: null, max: 28.6, score: -1 },
       ],
       cadence: 'daily',
       live_tracking_only: true,
