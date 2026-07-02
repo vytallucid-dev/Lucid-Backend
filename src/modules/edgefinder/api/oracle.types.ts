@@ -223,3 +223,120 @@ export interface FxPairData {
   /** ISO date of the pair score's scoreDate (when the underlying data is as-of). */
   lastUpdated: string | null;
 }
+
+// ============================================================================
+// Dated-history endpoints (Oracle Tools engine)
+//
+// These are ADDITIVE read endpoints that expose the dated rows already stored
+// in edgefinder_scorecards / edgefinder_pair_scores / data_points / cot_data /
+// currency_cycle_stance. They do not replace the flat `scoreHistory: number[]`
+// on ScorecardAsset/FxPairData that the current scorecard pages depend on.
+// ============================================================================
+
+export type HistoryRange = '1M' | '3M' | '6M' | '1Y';
+
+/** One indicator's contribution to a scorecard's total on a given date. */
+export interface ScoreHistoryBreakdownEntry {
+  indicatorCode: string;
+  score: number | null;
+  uiGroup: string | null;
+  isCot: boolean;
+  outcome: 'scored' | 'carry_forward' | 'insufficient_data' | 'absent';
+  reason: string | null;
+}
+
+/** One dated point in an asset/pair total-score series. */
+export interface ScoreHistoryPoint {
+  /** ISO date (YYYY-MM-DD) of the observation/score date. */
+  date: string;
+  totalScore: number;
+  fundamentalsScore: number | null;
+  cotScore: number | null;
+  bias: BiasType;
+  /**
+   * Per-indicator breakdown that produced this date's score. Present for asset
+   * subjects (from edgefinder_scorecards.indicatorBreakdown). Empty array for
+   * pairs whose row breakdown isn't included in this series shape.
+   */
+  indicatorBreakdown: ScoreHistoryBreakdownEntry[];
+}
+
+/** GET /api/oracle/score-history?subject=USD&range=3M — asset or FX pair. */
+export interface ScoreHistoryResponse {
+  subject: string;
+  kind: 'asset' | 'pair';
+  name: string;
+  flag: string;
+  range: HistoryRange;
+  from: string | null;
+  to: string | null;
+  points: ScoreHistoryPoint[];
+  outcome: 'scored' | 'insufficient_data';
+  reason: string | null;
+}
+
+/** One dated release of a single indicator. */
+export interface IndicatorHistoryPoint {
+  /** ISO date (YYYY-MM-DD) of the observation/release date. */
+  date: string;
+  value: number;
+  forecast: number | null;
+  previous: number | null;
+  /** actual - forecast, or null when no forecast for that release. */
+  surprise: number | null;
+}
+
+/** GET /api/oracle/indicator-history?code=US_CPI_YOY&range=6M. */
+export interface IndicatorHistoryResponse {
+  code: string;
+  name: string;
+  range: HistoryRange;
+  from: string | null;
+  to: string | null;
+  points: IndicatorHistoryPoint[];
+  outcome: 'scored' | 'insufficient_data';
+  reason: string | null;
+}
+
+/** One dated CFTC report of an asset's positioning. */
+export interface CotHistoryPoint {
+  /** ISO date (YYYY-MM-DD) CFTC report date (Tuesdays). */
+  reportDate: string;
+  /** ISO date (YYYY-MM-DD) CFTC release date (Fridays). */
+  releaseDate: string;
+  longContracts: number | null;
+  shortContracts: number | null;
+  longPct: number | null;
+  shortPct: number | null;
+  /** Net positioning = long% - short%, when both present. */
+  netPct: number | null;
+  weeklyChangePct: number | null;
+  netPositioningLabel: 'Bullish' | 'Bearish' | 'Neutral' | null;
+  changeLabel: 'Bullish' | 'Bearish' | 'Neutral' | null;
+}
+
+/** GET /api/oracle/cot-history?asset=USD&range=6M. */
+export interface CotHistoryResponse {
+  asset: string;
+  flag: string;
+  range: HistoryRange;
+  from: string | null;
+  to: string | null;
+  points: CotHistoryPoint[];
+  outcome: 'scored' | 'insufficient_data';
+  reason: string | null;
+}
+
+/** One currency's active central-bank cycle stance. */
+export interface CycleStanceEntry {
+  currencyCode: string;
+  stance: 'CUTTING' | 'NEUTRAL' | 'HIKING';
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  notes: string | null;
+}
+
+/** GET /api/oracle/cycle-stances — active effective-dated stance per currency. */
+export interface CycleStancesResponse {
+  stances: CycleStanceEntry[];
+}

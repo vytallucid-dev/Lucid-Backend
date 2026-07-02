@@ -99,6 +99,10 @@ export const createTradeSchema = z
     main_exit_price: z.number().finite().optional().nullable(),
     date_closed: dateTimeLike.optional().nullable(),
     exit_type: z.enum(EXIT_TYPES).default('TP'),
+    // User-entered realized P&L for the closed trade. When provided it is stored
+    // verbatim as the trade's result (no recompute); the app's outcome/aggregates
+    // read it. Null/omitted leaves the trade with no manual P&L.
+    net_pnl: z.number().finite().optional().nullable(),
   })
   .refine((d) => !d.is_closed || d.main_exit_price != null, {
     message: 'main_exit_price is required when a trade is closed',
@@ -117,7 +121,10 @@ export const updateTradeSchema = z.object({
   lot_size: z.number().finite().positive().optional(),
   risk_pct: z.number().finite().nonnegative().optional(),
   conviction: z.enum(CONVICTIONS).optional(),
-  fundamental_score: z.number().int().min(1).max(10).optional().nullable(),
+  // Must match createTradeSchema's range (−50…50). The Oracle/Lucid score can be
+  // negative or >10, so the old min(1).max(10) bound rejected edits of any trade
+  // whose stored score fell outside 1–10 — the intermittent trade-edit failure.
+  fundamental_score: z.number().int().min(-50).max(50).optional().nullable(),
   psychology: z.string().trim().max(120).optional().nullable(),
   notes: z.string().trim().max(5000).optional().nullable(),
   screenshots: z.array(z.string()).max(20).optional(),
@@ -128,6 +135,8 @@ export const updateTradeSchema = z.object({
   main_exit_price: z.number().finite().optional().nullable(),
   date_closed: dateTimeLike.optional().nullable(),
   exit_type: z.enum(EXIT_TYPES).optional(),
+  // User-entered realized P&L (see createTradeSchema). Stored verbatim as the result.
+  net_pnl: z.number().finite().optional().nullable(),
 });
 
 // ─── Planned trades ──────────────────────────────────────────────────────────

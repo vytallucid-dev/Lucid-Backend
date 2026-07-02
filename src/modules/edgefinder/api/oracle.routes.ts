@@ -20,6 +20,16 @@ import type {
   FxIndicatorRow,
   FxCotSide,
   ResultTag,
+  HistoryRange,
+  ScoreHistoryResponse,
+  ScoreHistoryPoint,
+  ScoreHistoryBreakdownEntry,
+  IndicatorHistoryResponse,
+  IndicatorHistoryPoint,
+  CotHistoryResponse,
+  CotHistoryPoint,
+  CycleStancesResponse,
+  CycleStanceEntry,
 } from './oracle.types';
 import {
   scoreToFrontendBias,
@@ -46,6 +56,7 @@ import {
   SCORECARD_KEY_TO_ASSET_CODE,
   SCORECARD_ASSET_META,
   COT_ASSETS,
+  COT_ASSET_FLAG,
 } from './oracle-mappers';
 import { getCompassSnapshot } from '@modules/edgefinder/services/compass/compass-public.service';
 
@@ -1055,6 +1066,344 @@ oracleRouter.get('/fx-scorecard', async (req: Request, res: Response, next: Next
     } else {
       res.json({ success: true, data });
     }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================================================
+// Dated-history endpoints (Oracle Tools engine) — ADDITIVE, expose-only.
+//
+// These expose the dated rows already stored in edgefinder_scorecards /
+// edgefinder_pair_scores / data_points / cot_data / currency_cycle_stance.
+// They do NOT alter the flat 12-week `scoreHistory: number[]` the scorecard
+// pages depend on (that path — compute12WeekHistory — is left untouched).
+// All are vintage-aware (isCurrent: true), matching the existing reads.
+// ============================================================================
+
+/** Maps a UI range to a lookback window in days. */
+const RANGE_DAYS: Record<HistoryRange, number> = {
+  '1M': 31,
+  '3M': 93,
+  '6M': 186,
+  '1Y': 372,
+};
+
+/** Returns the earliest date to include for a given range, relative to now. */
+function rangeStart(range: HistoryRange, asOf: Date): Date {
+  const d = new Date(asOf);
+  d.setUTCDate(d.getUTCDate() - RANGE_DAYS[range]);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+/** YYYY-MM-DD from a Date (UTC). */
+function isoDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+const historyRangeSchema = z
+  .enum(['1M', '3M', '6M', '1Y'])
+  .default('3M');
+
+// ----------------------------------------------------------------------------
+// GET /api/oracle/score-history?subject=USD&range=3M
+// Dated total-score series for an asset (USD/EUR/GBP/JPY/Gold) or FX pair
+// (EURUSD/GBPUSD/USDJPY/EURJPY/GBPJPY). Asset points carry the per-date
+// indicatorBreakdown that produced each score; pair points carry an empty
+// breakdown (the row breakdown shape differs and isn't part of this series).
+// ----------------------------------------------------------------------------
+
+const ASSET_SUBJECTS = ['USD', 'EUR', 'GBP', 'JPY', 'Gold'] as const;
+const PAIR_SUBJECTS = ['EURUSD', 'GBPUSD', 'USDJPY', 'EURJPY', 'GBPJPY'] as const;
+
+const scoreHistoryQuerySchema = z.object({
+  subject: z.enum([...ASSET_SUBJECTS, ...PAIR_SUBJECTS]),
+  range: historyRangeSchema,
+});
+
+oracleRouter.get('/score-history', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = scoreHistoryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new AppError(400, 'Missing or invalid subject/range query param', 'VALIDATION_ERROR', parsed.error.flatten());
+    }
+    const { subject, range } = parsed.data;
+    const now = new Date();
+    const from = rangeStart(range, now);
+    const isPair = (PAIR_SUBJECTS as readonly string[]).includes(subject);
+
+    if (isPair) {
+      const meta = FX_PAIR_META[subject];
+      const assetRecord = await prisma.asset.findFirst({ where: { code: subject } });
+      if (!assetRecord) {
+        throw new AppError(404, `Pair not found: ${subject}`, 'PAIR_NOT_FOUND');
+      }
+      const rows = await prisma.edgefinderPairScore.findMany({
+        where: { pairId: assetRecord.id, isCurrent: true, scoreDate: { gte: from, lte: now } },
+        orderBy: { scoreDate: 'asc' },
+        select: { scoreDate: true, totalScore: true, basePairScore: true, pairCotScore: true },
+      });
+      const points: ScoreHistoryPoint[] = rows.map((r) => ({
+        date: isoDate(r.scoreDate),
+        totalScore: r.totalScore,
+        fundamentalsScore: r.basePairScore,
+        cotScore: r.pairCotScore,
+        bias: scoreToFrontendBias(r.totalScore),
+        indicatorBreakdown: [],
+      }));
+      const response: ScoreHistoryResponse = {
+        subject,
+        kind: 'pair',
+        name: meta.label,
+        flag: `${meta.currAFlag}${meta.currBFlag}`,
+        range,
+        from: points.length ? points[0].date : null,
+        to: points.length ? points[points.length - 1].date : null,
+        points,
+        outcome: points.length ? 'scored' : 'insufficient_data',
+        reason: points.length ? null : 'No pair-score history in range',
+      };
+      res.json({ success: true, data: response });
+      return;
+    }
+
+    // Asset subject
+    const dbCode = SCORECARD_KEY_TO_ASSET_CODE[subject];
+    const meta = SCORECARD_ASSET_META[subject];
+    const assetRecord = await prisma.asset.findFirst({ where: { code: dbCode } });
+    if (!assetRecord) {
+      throw new AppError(404, `Asset not found: ${dbCode}`, 'ASSET_NOT_FOUND');
+    }
+    const rows = await prisma.edgefinderScorecard.findMany({
+      where: { assetId: assetRecord.id, isCurrent: true, observationDate: { gte: from, lte: now } },
+      orderBy: { observationDate: 'asc' },
+      select: {
+        observationDate: true,
+        totalScore: true,
+        fundamentalsScore: true,
+        cotScore: true,
+        indicatorBreakdown: true,
+      },
+    });
+    const points: ScoreHistoryPoint[] = rows.map((r) => ({
+      date: isoDate(r.observationDate),
+      totalScore: r.totalScore,
+      fundamentalsScore: r.fundamentalsScore,
+      cotScore: r.cotScore,
+      bias: scoreToFrontendBias(r.totalScore),
+      indicatorBreakdown: parseArray<ScoreHistoryBreakdownEntry>(r.indicatorBreakdown),
+    }));
+    const response: ScoreHistoryResponse = {
+      subject,
+      kind: 'asset',
+      name: meta.name,
+      flag: meta.flag,
+      range,
+      from: points.length ? points[0].date : null,
+      to: points.length ? points[points.length - 1].date : null,
+      points,
+      outcome: points.length ? 'scored' : 'insufficient_data',
+      reason: points.length ? null : 'No scorecard history in range',
+    };
+    res.json({ success: true, data: response });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ----------------------------------------------------------------------------
+// GET /api/oracle/indicator-history?code=US_CPI_YOY&range=6M
+// Dated release series for a single indicator (value / forecast / previous),
+// with per-release surprise (actual - forecast). Vintage-aware (isCurrent).
+// ----------------------------------------------------------------------------
+
+const indicatorHistoryQuerySchema = z.object({
+  code: z.string().min(1).max(50),
+  range: historyRangeSchema,
+});
+
+oracleRouter.get('/indicator-history', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = indicatorHistoryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new AppError(400, 'Missing or invalid code/range query param', 'VALIDATION_ERROR', parsed.error.flatten());
+    }
+    const { code, range } = parsed.data;
+    const now = new Date();
+    const from = rangeStart(range, now);
+
+    const indicator = await prisma.indicator.findUnique({
+      where: { code },
+      select: { id: true, code: true, name: true },
+    });
+    if (!indicator) {
+      throw new AppError(404, `Indicator not found: ${code}`, 'INDICATOR_NOT_FOUND');
+    }
+
+    const rows = await prisma.dataPoint.findMany({
+      where: { indicatorId: indicator.id, isCurrent: true, observationDate: { gte: from, lte: now } },
+      orderBy: { observationDate: 'asc' },
+      select: { observationDate: true, value: true, forecastValue: true, previousValue: true },
+    });
+
+    const points: IndicatorHistoryPoint[] = rows.map((r) => {
+      const value = Number(r.value);
+      const forecast = r.forecastValue !== null ? Number(r.forecastValue) : null;
+      const previous = r.previousValue !== null ? Number(r.previousValue) : null;
+      return {
+        date: isoDate(r.observationDate),
+        value,
+        forecast,
+        previous,
+        surprise: forecast !== null ? value - forecast : null,
+      };
+    });
+
+    const response: IndicatorHistoryResponse = {
+      code: indicator.code,
+      name: indicator.name,
+      range,
+      from: points.length ? points[0].date : null,
+      to: points.length ? points[points.length - 1].date : null,
+      points,
+      outcome: points.length ? 'scored' : 'insufficient_data',
+      reason: points.length ? null : 'No data points in range',
+    };
+    res.json({ success: true, data: response });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ----------------------------------------------------------------------------
+// GET /api/oracle/cot-history?asset=USD&range=6M
+// Dated CFTC positioning series per asset (USD/EUR/GBP/JPY/Gold). Exposes the
+// real historical cot_data rows (multiple reportDates already stored). No
+// pair-COT logic is touched — this reads the same single-asset cot_data the
+// COT page already uses, just across time. (Recon found no COT pair bug.)
+// ----------------------------------------------------------------------------
+
+const COT_HISTORY_ASSETS = ['USD', 'EUR', 'GBP', 'JPY', 'Gold'] as const;
+
+const cotHistoryQuerySchema = z.object({
+  asset: z.enum(COT_HISTORY_ASSETS),
+  range: historyRangeSchema,
+});
+
+oracleRouter.get('/cot-history', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = cotHistoryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new AppError(400, 'Missing or invalid asset/range query param', 'VALIDATION_ERROR', parsed.error.flatten());
+    }
+    const { asset, range } = parsed.data;
+    const now = new Date();
+    const from = rangeStart(range, now);
+
+    // Gold's cot_data is keyed by XAUUSD; currencies key by their own code.
+    const dbCode = asset === 'Gold' ? 'XAUUSD' : asset;
+    const flag = COT_ASSET_FLAG[dbCode] ?? '';
+
+    const assetRecord = await prisma.asset.findFirst({ where: { code: dbCode } });
+    if (!assetRecord) {
+      throw new AppError(404, `Asset not found: ${dbCode}`, 'ASSET_NOT_FOUND');
+    }
+
+    const rows = await prisma.cotData.findMany({
+      where: { assetId: assetRecord.id, isCurrent: true, reportDate: { gte: from, lte: now } },
+      orderBy: { reportDate: 'asc' },
+      select: {
+        reportDate: true,
+        releaseDate: true,
+        longContracts: true,
+        shortContracts: true,
+        longPct: true,
+        shortPct: true,
+        weeklyChangePct: true,
+        netPositioningLabel: true,
+        changeLabel: true,
+      },
+    });
+
+    const toLabel = (l: string | null): 'Bullish' | 'Bearish' | 'Neutral' | null =>
+      l === 'Bullish' || l === 'Bearish' || l === 'Neutral' ? l : l === null ? null : 'Neutral';
+
+    const points: CotHistoryPoint[] = rows.map((r) => {
+      const longPct = r.longPct !== null ? Number(r.longPct) : null;
+      const shortPct = r.shortPct !== null ? Number(r.shortPct) : null;
+      return {
+        reportDate: isoDate(r.reportDate),
+        releaseDate: isoDate(r.releaseDate),
+        longContracts: r.longContracts,
+        shortContracts: r.shortContracts,
+        longPct,
+        shortPct,
+        netPct: longPct !== null && shortPct !== null ? longPct - shortPct : null,
+        weeklyChangePct: r.weeklyChangePct !== null ? Number(r.weeklyChangePct) : null,
+        netPositioningLabel: toLabel(r.netPositioningLabel),
+        changeLabel: toLabel(r.changeLabel),
+      };
+    });
+
+    const response: CotHistoryResponse = {
+      asset,
+      flag,
+      range,
+      from: points.length ? points[0].reportDate : null,
+      to: points.length ? points[points.length - 1].reportDate : null,
+      points,
+      outcome: points.length ? 'scored' : 'insufficient_data',
+      reason: points.length ? null : 'No COT history in range',
+    };
+    res.json({ success: true, data: response });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ----------------------------------------------------------------------------
+// GET /api/oracle/cycle-stances
+// Active central-bank cycle stance per currency, effective-dated. Mirrors the
+// admin read (cycle-stances.routes.ts) but is served under the Oracle router.
+//
+// NOTE: the Oracle router is mounted with `requireAuth` (app.ts), so this is a
+// signed-in read like every other Oracle endpoint — NOT anonymous. A truly
+// unauthenticated public route can't be added here without changing the shared
+// /api/oracle mount, which is out of scope for this additive pass and would
+// affect every existing Oracle read. Flagged in the self-verify report.
+// ----------------------------------------------------------------------------
+
+oracleRouter.get('/cycle-stances', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const today = new Date();
+
+    const stances = await prisma.currencyCycleStance.findMany({
+      where: {
+        effectiveFrom: { lte: today },
+        OR: [{ effectiveTo: null }, { effectiveTo: { gte: today } }],
+      },
+      orderBy: [{ currencyCode: 'asc' }, { effectiveFrom: 'desc' }],
+    });
+
+    // Deduplicate — keep only the latest active row per currency (mirrors admin).
+    const seen = new Set<string>();
+    const active = stances.filter((s) => {
+      if (seen.has(s.currencyCode)) return false;
+      seen.add(s.currencyCode);
+      return true;
+    });
+
+    const entries: CycleStanceEntry[] = active.map((s) => ({
+      currencyCode: s.currencyCode,
+      stance: (s.stance === 'CUTTING' || s.stance === 'HIKING' ? s.stance : 'NEUTRAL') as CycleStanceEntry['stance'],
+      effectiveFrom: isoDate(s.effectiveFrom),
+      effectiveTo: s.effectiveTo ? isoDate(s.effectiveTo) : null,
+      notes: s.notes ?? null,
+    }));
+
+    const response: CycleStancesResponse = { stances: entries };
+    res.json({ success: true, data: response });
   } catch (err) {
     next(err);
   }
