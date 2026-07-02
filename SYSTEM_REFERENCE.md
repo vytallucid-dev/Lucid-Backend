@@ -37,6 +37,7 @@ The NIFTY module produces a daily **scorecard** for the NIFTY 50 index. It is co
 | 11 | `IND_NIFTY_11_BRENT` | Brent Crude 10-day Direction | External | FRED (`DCOILBRENTEU`) | Daily |
 | 12 | `IND_NIFTY_12_USDINR` | USD/INR 10-day Direction | External | FRED (`DEXINUS`) | Daily |
 | 13 | `IND_NIFTY_13_FII_LS_RATIO` | FII Long/Short Ratio (Futures) | External | NSE Archives CSV | Daily |
+| 14 | `IND_NIFTY_14_DII_FLOW` | DII Net Flow | — (display-only, not scored) | NSE scrape (`/api/fiidiiTradeReact`) | Daily |
 
 ---
 
@@ -235,25 +236,30 @@ The scoring handler reads the last 10 `isCurrent = true` data points for this in
 ### Ind 7 — `IND_NIFTY_07_DII_ABSORPTION` — DII Absorption Ratio
 
 **How data accumulates:**  
-Derived in the same NSE FII/DII scrape call as Ind 6. Formula: `dii_buy / abs(fii_sell)`. Only stored when FII was a **net seller** on that day (structurally undefined on net-buyer days).
+Derived in the same NSE FII/DII scrape call as Ind 6. Formula: `dii_net / abs(fii_sell)`, where `dii_net` is NSE's own precomputed DII net (buy − sell). A data point is written **every** trading day:
+- **FII net seller** → ratio = `dii_net / abs(fii_sell)`; `sourceMetadata.fii_was_net_seller = true`. This is the scoreable case. `dii_net` may be negative (DII also net selling → "both fleeing"), which yields a negative ratio.
+- **FII net buyer** → absorption = `0` (a real stored value, not null); `sourceMetadata.fii_was_net_seller = false`. Nothing to absorb when FII isn't selling, so neutral by definition. These 0-valued rows are for display/series-completeness ONLY.
 
 **Modes of filling:**  
 Same as Ind 6 (same job, same route). No separate trigger.
 
 **Scoring logic:**  
-Rule type: `threshold`  
-- `+1` if ratio ≥ 0.75 (DII absorbing ≥75% of FII outflow)  
-- `-1` if ratio < 0.25  
-- `0` otherwise  
+Rule type: `rolling_ratio_excluding` (5-day rolling average, excluding FII-net-buyer days via `fii_was_net_seller`)  
+- `+1` if rolling avg ≥ 0.75 (DII absorbing ≥75% of FII outflow)  
+- `0` if 0 ≤ rolling avg < 0.75  
+- `-2` if rolling avg < 0 (DII also net selling — "both fleeing"); handler emits flag `DII_NET_SELLER_REGIME`  
+- `all_excluded_fallback`: score `0` + flag `FII_NET_BUYERS_REGIME` when all 5 window days were FII-net-buyer days  
+
+The buyer-day 0-valued rows carry `fii_was_net_seller = false` and are **excluded** from the rolling average — they never move the score.
 
 **Log stored as:**  
 `job_name = 'scrape_nse_fii_dii'` (same row as Ind 6)
 
 **Data point key:**  
-`source = 'derived'`, `sourceMetadata.formula = 'dii_buy / abs(fii_sell)'`
+`source = 'derived'`, `sourceMetadata.formula = 'dii_net / abs(fii_sell)'`, plus `dii_net_crore`, `dii_buy_crore`, `dii_sell_crore`, `fii_sell_crore`, `fii_was_net_seller`.
 
 **Special conditions:**  
-**No data point is written on days when FII is a net buyer.** The scoring engine will carry forward the last available score on those days. This is by design per spec — the absorption ratio is undefined when there's no net FII outflow to absorb.
+A data point IS now written on FII-net-buyer days (value `0`), a change from the prior behavior where buyer days stored nothing. Existing historical rows written before this change keep the OLD `dii_buy / abs(fii_sell)` formula and OLD metadata — they were not recomputed (no backfill; DII sell/net were never captured for those dates and NSE only returns the latest day).
 
 ---
 
@@ -528,13 +534,14 @@ POST /api/admin/cron/run                    → fire any job by name
 | `IND_NIFTY_04_RBI_RATE` | `manual` | — |
 | `IND_NIFTY_05_IIP` | `fred` | `seriesId: 'INDPROINDMISMEI'` |
 | `IND_NIFTY_06_FII_FLOW` | `nse_scrape` | `endpoint: '/api/fiidiiTradeReact'` |
-| `IND_NIFTY_07_DII_ABSORPTION` | `derived` | `formula: 'dii_buy / abs(fii_sell)'` |
+| `IND_NIFTY_07_DII_ABSORPTION` | `derived` | `formula: 'dii_net / abs(fii_sell)'`, `dii_net_crore`, `dii_buy_crore`, `dii_sell_crore`, `fii_sell_crore`, `fii_was_net_seller` |
 | `IND_NIFTY_08_VIX` | `nse_scrape` | `endpoint: '/api/allIndices'` |
 | `IND_NIFTY_09_USD_WEAKNESS` | `derived` | `usdScorecardDate`, `indicatorBreakdown` |
 | `IND_NIFTY_10_DXY` | `fred` | `seriesId: 'DTWEXBGS'` |
 | `IND_NIFTY_11_BRENT` | `fred` | `seriesId: 'DCOILBRENTEU'` |
 | `IND_NIFTY_12_USDINR` | `fred` | `seriesId: 'DEXINUS'` |
 | `IND_NIFTY_13_FII_LS_RATIO` | `nse_scrape` | `formula: 'long / (long + short) * 100'` |
+| `IND_NIFTY_14_DII_FLOW` | `nse_scrape` | `endpoint: '/api/fiidiiTradeReact'`, `dii_buy_crore`, `dii_sell_crore`, `dii_net_crore` |
 
 ---
 
@@ -1169,7 +1176,7 @@ WHERE eps.is_current = true ORDER BY eps.score_date DESC, a.code;
 |---------|-------------|-------|
 | Ind 9 missing from NIFTY scorecard | Ind9 bridge didn't run or EdgeFinder USD scorecard absent | `data_fetch_log` for `nifty_ind9_bridge`; `edgefinder_scorecards` for USD on that date |
 | NIFTY scorecard has many `carry_forward` | Data not fetching (FRED/NSE down or holiday) | `data_fetch_log` for relevant job; check for `status = 'failed'` |
-| Ind 7 (DII Absorption) not stored today | FII was net buyer today | Check `data_points` for Ind 6 — if `value > 0`, Ind 7 is intentionally null |
+| Ind 7 (DII Absorption) scored 0 today | FII was net buyer today | Ind 7 now stores `0` on FII-buyer days (`sourceMetadata.fii_was_net_seller = false`); those rows are excluded from the rolling average, so score reflects prior seller days |
 | COT score unchanged for weeks | CFTC fetch only runs Fridays; data should update weekly | Check `cot_data` for latest `report_date`; should be within past 10 days |
 | Compass shows `skipped_no_inputs` | Not all 6 inputs were ingested (market holiday or API failure) | Check `compass_inputs` for the date — count rows; missing ones indicate which service failed |
 | EdgeFinder scorecard `regime = 'Caution'` even when expected Risk-Off | Compass classifier: persistence rule needs 5 consecutive days | Check `persistence_days_count` in `compass_classifications` |
