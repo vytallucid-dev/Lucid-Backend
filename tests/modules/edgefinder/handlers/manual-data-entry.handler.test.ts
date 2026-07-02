@@ -3,6 +3,8 @@ import type { Request, Response, NextFunction } from 'express';
 
 vi.mock('@modules/edgefinder/services/manual-data-entry.service', () => ({
   ingestManualEntry: vi.fn(),
+  // Real pure type-guard — the handler uses it to branch to the 409 path.
+  isRevisionMismatch: (r: Record<string, unknown>) => 'requiresRevisionConfirmation' in r,
 }));
 
 import { ingestManualEntry } from '@modules/edgefinder/services/manual-data-entry.service';
@@ -198,6 +200,87 @@ describe('manualDataEntryHandler', () => {
     });
     expect((err as AppError).statusCode).toBe(400);
     expect((err as AppError).code).toBe('INDICATOR_NOT_MANUAL_ELIGIBLE');
+  });
+
+  it('returns 409 with the revision-confirmation body when service reports a mismatch', async () => {
+    mockedIngest.mockResolvedValue({
+      requiresRevisionConfirmation: true,
+      indicatorCode: 'US_CPI_YOY',
+      storedActual: 3.9,
+      storedActualDate: '2026-05-12',
+      submittedPrevious: 3.8,
+    });
+
+    const { res, err } = await call({
+      indicatorCode: 'US_CPI_YOY',
+      observationDate: '2026-06-01',
+      actual: 4.1,
+      previous: 3.8,
+    });
+
+    expect(err).toBeUndefined();
+    expect(res.statusCode).toBe(409);
+    const body = res.body as Record<string, unknown>;
+    expect(body.requiresRevisionConfirmation).toBe(true);
+    expect(body.storedActual).toBe(3.9);
+    expect(body.storedActualDate).toBe('2026-05-12');
+    expect(body.submittedPrevious).toBe(3.8);
+    expect(body.indicatorCode).toBe('US_CPI_YOY');
+    // A 409 must NOT look like a success write.
+    expect(body.success).toBeUndefined();
+    expect(body.dataPointId).toBeUndefined();
+  });
+
+  it('passes confirmRevision: true through to the service', async () => {
+    mockedIngest.mockResolvedValue({
+      dataPointId: 'dp-rev',
+      action: 'inserted',
+      indicator: { code: 'US_CPI_YOY', name: 'US CPI YoY' },
+      observationDate: new Date('2026-06-01T00:00:00.000Z'),
+      value: 4.1,
+      isRateDecision: false,
+      forecastValue: null,
+      previousValue: 3.8,
+      notes: null,
+    });
+
+    const { res } = await call({
+      indicatorCode: 'US_CPI_YOY',
+      observationDate: '2026-06-01',
+      actual: 4.1,
+      previous: 3.8,
+      confirmRevision: true,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockedIngest).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmRevision: true, previous: 3.8 }),
+    );
+  });
+
+  it('omits confirmRevision (undefined) when not sent — additive default', async () => {
+    mockedIngest.mockResolvedValue({
+      dataPointId: 'dp-plain',
+      action: 'inserted',
+      indicator: { code: 'US_CPI_YOY', name: 'US CPI YoY' },
+      observationDate: new Date('2026-06-01T00:00:00.000Z'),
+      value: 4.1,
+      isRateDecision: false,
+      forecastValue: null,
+      previousValue: 3.8,
+      notes: null,
+    });
+
+    await call({
+      indicatorCode: 'US_CPI_YOY',
+      observationDate: '2026-06-01',
+      actual: 4.1,
+      previous: 3.8,
+    });
+
+    expect(mockedIngest).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmRevision: undefined }),
+    );
   });
 
   it('passes triggeredBy from x-admin-user header to service', async () => {

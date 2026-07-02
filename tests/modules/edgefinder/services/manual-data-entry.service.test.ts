@@ -23,7 +23,10 @@ vi.mock('@core/repositories/data-fetch-log.repository', () => ({
 import { prisma } from '@core/db/prisma';
 import { dataPointsRepository } from '@core/repositories/data-points.repository';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
-import { ingestManualEntry } from '@modules/edgefinder/services/manual-data-entry.service';
+import {
+  ingestManualEntry,
+  isRevisionMismatch,
+} from '@modules/edgefinder/services/manual-data-entry.service';
 import { AppError } from '@core/middleware/error-handler';
 
 const mockedFindUnique = prisma.indicator.findUnique as unknown as ReturnType<typeof vi.fn>;
@@ -276,5 +279,136 @@ describe('ingestManualEntry', () => {
     await expect(
       ingestManualEntry(baseInput({ indicatorCode: 'US_02Y_SMA' })),
     ).rejects.toBeInstanceOf(AppError);
+  });
+
+  // ── Revision detection ────────────────────────────────────────────────────
+  describe('revision pre-check', () => {
+    const CPI_INDICATOR = {
+      id: 'ind-cpi',
+      code: 'US_CPI_YOY',
+      name: 'US CPI YoY',
+      dataSource: 'forex_factory',
+    };
+
+    // The last stored actual the frontend auto-fills and the backend compares
+    // `previous` against. Ordered observationDate-desc, isCurrent.
+    function mockLastActual(value: number, date = '2026-05-01') {
+      mockedFindFirst.mockResolvedValue({
+        value,
+        observationDate: new Date(`${date}T00:00:00.000Z`),
+      });
+    }
+
+    // (a) match → writes normally, no interruption
+    it('previous matches last stored actual → writes normally', async () => {
+      mockedFindUnique.mockResolvedValue(CPI_INDICATOR);
+      mockLastActual(3.9);
+      mockedUpsert.mockResolvedValue({ action: 'inserted', dataPoint: { id: 'dp-m' } });
+
+      const result = await ingestManualEntry(baseInput({ actual: 4.1, previous: 3.9 }));
+
+      expect(isRevisionMismatch(result)).toBe(false);
+      expect(mockedUpsert).toHaveBeenCalledTimes(1);
+      // No manual_revision_confirmed audit row on a clean match.
+      const revisionLogged = mockedLogStart.mock.calls.some(
+        (c) => c[0].jobName === 'manual_revision_confirmed',
+      );
+      expect(revisionLogged).toBe(false);
+    });
+
+    it('previous within float tolerance (0.0001) of stored actual → writes normally', async () => {
+      mockedFindUnique.mockResolvedValue(CPI_INDICATOR);
+      mockLastActual(3.9);
+      mockedUpsert.mockResolvedValue({ action: 'inserted', dataPoint: { id: 'dp-tol' } });
+
+      const result = await ingestManualEntry(
+        baseInput({ actual: 4.1, previous: 3.90005 }),
+      );
+
+      expect(isRevisionMismatch(result)).toBe(false);
+      expect(mockedUpsert).toHaveBeenCalledTimes(1);
+    });
+
+    // (b) mismatch without flag → returns mismatch, writes nothing
+    it('previous differs from stored actual, no confirmRevision → returns mismatch, writes nothing', async () => {
+      mockedFindUnique.mockResolvedValue(CPI_INDICATOR);
+      mockLastActual(3.9, '2026-05-12');
+
+      const result = await ingestManualEntry(baseInput({ actual: 4.1, previous: 3.8 }));
+
+      expect(isRevisionMismatch(result)).toBe(true);
+      if (isRevisionMismatch(result)) {
+        expect(result.requiresRevisionConfirmation).toBe(true);
+        expect(result.indicatorCode).toBe('US_CPI_YOY');
+        expect(result.storedActual).toBe(3.9);
+        expect(result.storedActualDate).toBe('2026-05-12');
+        expect(result.submittedPrevious).toBe(3.8);
+      }
+      // Nothing written, no fetch_log started at all.
+      expect(mockedUpsert).not.toHaveBeenCalled();
+      expect(mockedLogStart).not.toHaveBeenCalled();
+    });
+
+    // (c) mismatch with confirmRevision: true → writes, logs revision
+    it('previous differs with confirmRevision: true → writes and logs manual_revision_confirmed', async () => {
+      mockedFindUnique.mockResolvedValue(CPI_INDICATOR);
+      mockLastActual(3.9, '2026-05-12');
+      mockedUpsert.mockResolvedValue({ action: 'inserted', dataPoint: { id: 'dp-rev' } });
+
+      const result = await ingestManualEntry(
+        baseInput({
+          actual: 4.1,
+          previous: 3.8,
+          confirmRevision: true,
+          triggeredBy: 'ajmix06@gmail.com',
+        }),
+      );
+
+      expect(isRevisionMismatch(result)).toBe(false);
+      expect(mockedUpsert).toHaveBeenCalledTimes(1);
+      // The upsert wrote THIS month's row with the submitted previous unchanged.
+      const upsertCall = mockedUpsert.mock.calls[0][0];
+      expect(upsertCall.value).toBe(4.1);
+      expect(upsertCall.previousValue).toBe(3.8);
+
+      // A standalone manual_revision_confirmed audit row was written.
+      const revisionStart = mockedLogStart.mock.calls.find(
+        (c) => c[0].jobName === 'manual_revision_confirmed',
+      );
+      expect(revisionStart).toBeDefined();
+      const meta = revisionStart![0].metadata as Record<string, unknown>;
+      expect(meta.indicatorCode).toBe('US_CPI_YOY');
+      expect(meta.storedActual).toBe(3.9);
+      expect(meta.storedActualDate).toBe('2026-05-12');
+      expect(meta.submittedPrevious).toBe(3.8);
+      expect(meta.submittedActual).toBe(4.1);
+      expect(meta.user).toBe('ajmix06@gmail.com');
+      expect(revisionStart![0].triggeredBy).toBe('ajmix06@gmail.com');
+    });
+
+    // (d) no prior data point → no pre-fill / no mismatch check, writes normally
+    it('no prior data point → skips mismatch check, writes normally', async () => {
+      mockedFindUnique.mockResolvedValue(CPI_INDICATOR);
+      mockedFindFirst.mockResolvedValue(null); // no last actual
+      mockedUpsert.mockResolvedValue({ action: 'inserted', dataPoint: { id: 'dp-first' } });
+
+      const result = await ingestManualEntry(baseInput({ actual: 4.1, previous: 3.8 }));
+
+      expect(isRevisionMismatch(result)).toBe(false);
+      expect(mockedUpsert).toHaveBeenCalledTimes(1);
+    });
+
+    it('no `previous` submitted → skips mismatch check even when stored actual differs', async () => {
+      mockedFindUnique.mockResolvedValue(CPI_INDICATOR);
+      mockLastActual(3.9);
+      mockedUpsert.mockResolvedValue({ action: 'inserted', dataPoint: { id: 'dp-noprev' } });
+
+      const result = await ingestManualEntry(
+        baseInput({ actual: 4.1, previous: null }),
+      );
+
+      expect(isRevisionMismatch(result)).toBe(false);
+      expect(mockedUpsert).toHaveBeenCalledTimes(1);
+    });
   });
 });

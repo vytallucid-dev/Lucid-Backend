@@ -1,7 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { AppError } from '@core/middleware/error-handler';
-import { ingestManualEntry } from '@modules/edgefinder/services/manual-data-entry.service';
+import {
+  ingestManualEntry,
+  isRevisionMismatch,
+} from '@modules/edgefinder/services/manual-data-entry.service';
 
 export const ManualDataEntrySchema = z.object({
   indicatorCode: z.string().min(1).max(50),
@@ -10,6 +13,9 @@ export const ManualDataEntrySchema = z.object({
   forecast: z.number().finite().nullable().optional(),
   previous: z.number().finite().nullable().optional(),
   notes: z.string().max(500).optional(),
+  // Additive: when omitted the POST behaves exactly as before. Set true to
+  // acknowledge a detected previous↔stored-actual mismatch and write anyway.
+  confirmRevision: z.boolean().optional(),
 });
 
 export async function manualDataEntryHandler(
@@ -25,7 +31,8 @@ export async function manualDataEntryHandler(
       });
     }
 
-    const { indicatorCode, observationDate, actual, forecast, previous, notes } = parsed.data;
+    const { indicatorCode, observationDate, actual, forecast, previous, notes, confirmRevision } =
+      parsed.data;
 
     const obsDate = new Date(`${observationDate}T00:00:00.000Z`);
     if (Number.isNaN(obsDate.getTime())) {
@@ -60,7 +67,23 @@ export async function manualDataEntryHandler(
       previous: previous ?? null,
       notes: notes ?? null,
       triggeredBy,
+      confirmRevision,
     });
+
+    // Revision gate: the submitted previous differs from the last stored actual
+    // and the caller has not confirmed. Nothing was written. Reply 409 with a
+    // distinct body so the frontend can prompt, then re-POST with
+    // confirmRevision: true.
+    if (isRevisionMismatch(result)) {
+      res.status(409).json({
+        requiresRevisionConfirmation: true,
+        indicatorCode: result.indicatorCode,
+        storedActual: result.storedActual,
+        storedActualDate: result.storedActualDate,
+        submittedPrevious: result.submittedPrevious,
+      });
+      return;
+    }
 
     res.status(200).json({
       success: true,
