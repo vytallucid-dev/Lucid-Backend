@@ -71,6 +71,12 @@ export async function rollingRatioExcludingHandler(
   }
 
   const flags: string[] = [];
+  // Negative rolling average means DII was, on net, ALSO selling on the FII-seller
+  // days in the window — "both fleeing". Surface this distinct regime with a flag,
+  // mirroring the all_excluded_fallback flag pattern above.
+  if (rollingAvg < 0) {
+    flags.push('DII_NET_SELLER_REGIME');
+  }
   if (validDays.length < points.length) {
     flags.push(`PARTIAL_WINDOW_${validDays.length}of${points.length}`);
   }

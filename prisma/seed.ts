@@ -184,6 +184,21 @@ async function seedIndicators(): Promise<void> {
       displayOrder: 13,
       compositeGroup: 'external' as const,
     },
+    {
+      // DISPLAY-ONLY. Mirrors Ind 6 (FII net flow) but for DII net flow. NOT scored,
+      // NOT in any composite (compositeGroup omitted → null), and explicitly excluded
+      // from computeAllScoresForDate via NON_SCORED_NIFTY_INDICATORS. Has no scoring
+      // rule in seed-rules-v2.ts / seed.ts. Does not affect net_score, composites, or
+      // band. Series legitimately starts from the next ingestion forward.
+      code: 'IND_NIFTY_14_DII_FLOW',
+      name: 'DII Net Flow',
+      category: 'flow' as const,
+      tool: 'nifty' as const,
+      frequency: 'daily' as const,
+      unit: 'INR_crore',
+      dataSource: 'nse_scrape' as const,
+      displayOrder: 14,
+    },
   ];
 
   for (const ind of indicators) {
@@ -264,9 +279,9 @@ async function seedScoringRules(): Promise<void> {
       ruleType: 'threshold',
       ruleDefinition: {
         type: 'threshold',
-        formula: 'dii_buy / abs(fii_sell)',
+        formula: 'dii_net / abs(fii_sell)',
         positive_if: 'ratio >= 0.75',
-        negative_if: 'ratio < 0.25',
+        negative_if: 'ratio < 0 (DII also net selling)',
         neutral_otherwise: true,
       },
     },

@@ -162,6 +162,15 @@ export async function computeAndStoreScore(
   };
 }
 
+/**
+ * NIFTY indicators that are display-only and must NOT be scored, composited, or
+ * counted in the scorecard. They have no scoring rule; attempting to score them
+ * would throw NO_ACTIVE_RULE every day and pollute the indicator breakdown. Kept
+ * out of computeAllScoresForDate so they never reach the scorecard math.
+ *   IND_NIFTY_14_DII_FLOW — DII net flow display series (mirror of Ind 6).
+ */
+const NON_SCORED_NIFTY_INDICATORS = new Set<string>(['IND_NIFTY_14_DII_FLOW']);
+
 export async function computeAllScoresForDate(
   observationDate: Date,
 ): Promise<ComputeAndStoreResult[]> {
@@ -173,6 +182,7 @@ export async function computeAllScoresForDate(
 
   const results: ComputeAndStoreResult[] = [];
   for (const ind of indicators) {
+    if (NON_SCORED_NIFTY_INDICATORS.has(ind.code)) continue;
     try {
       const r = await computeAndStoreScore({
         indicatorCode: ind.code,

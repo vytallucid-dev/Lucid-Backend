@@ -54,6 +54,9 @@ export async function createTrade(userId: string, input: CreateTradeInput): Prom
   const dateClosed = isClosed ? (input.date_closed ? new Date(input.date_closed) : new Date()) : null;
 
   const pipValue = await pipValueFor(userId, input.pair);
+  // Pips and R:R stay derived (display metrics). The trade's realized P&L is the
+  // user-entered net_pnl when supplied — stored verbatim, no recompute — falling
+  // back to the computed blendedPnl only when the client sends no manual value.
   const metrics = computeTradeMetrics({
     direction: input.direction,
     symbol: input.pair,
@@ -65,6 +68,7 @@ export async function createTrade(userId: string, input: CreateTradeInput): Prom
     lotSize: input.lot_size,
     pipValue,
   });
+  const resultPnl = isClosed && input.net_pnl != null ? input.net_pnl : metrics.blendedPnl;
 
   const created = await prisma.trade.create({
     data: {
@@ -84,7 +88,7 @@ export async function createTrade(userId: string, input: CreateTradeInput): Prom
       totalPips: dec(metrics.totalPips),
       riskPct: dec(input.risk_pct),
       conviction: input.conviction,
-      blendedPnl: dec(metrics.blendedPnl),
+      blendedPnl: dec(resultPnl),
       blendedRr: dec(metrics.blendedRr),
       exitType: input.exit_type,
       dateOpened,
@@ -162,6 +166,14 @@ export async function updateTrade(
     lotSize,
     pipValue,
   });
+  // Realized P&L is the user-entered net_pnl (stored verbatim, never recomputed
+  // from prices). An open trade has no result, so P&L is 0. When closed and this
+  // update doesn't touch net_pnl, preserve the value already stored.
+  const resultPnl = !effectiveClosed
+    ? 0
+    : input.net_pnl !== undefined
+      ? (input.net_pnl ?? metrics.blendedPnl)
+      : existing.blendedPnl.toNumber();
 
   const data: Prisma.TradeUpdateInput = {
     model: input.model ?? existing.model,
@@ -181,7 +193,7 @@ export async function updateTrade(
     partialExitPrice: effectiveClosed ? decOrNull(partialExitPrice) : null,
     partialExitLotPct: effectiveClosed ? decOrNull(partialExitLotPct) : null,
     totalPips: dec(metrics.totalPips),
-    blendedPnl: dec(metrics.blendedPnl),
+    blendedPnl: dec(resultPnl),
     blendedRr: dec(metrics.blendedRr),
   };
   if (input.first_tp_price !== undefined) data.firstTpPrice = decOrNull(input.first_tp_price);
