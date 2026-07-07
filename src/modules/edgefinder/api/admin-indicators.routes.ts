@@ -164,7 +164,7 @@ adminIndicatorsRouter.get(
 
       const indicator = await prisma.indicator.findUnique({
         where: { code: code as string },
-        select: { id: true, code: true, name: true, unit: true, frequency: true, dataSource: true, compositeGroup: true, country: true, uiGroup: true },
+        select: { id: true, code: true, name: true, unit: true, frequency: true, dataSource: true, compositeGroup: true, country: true, uiGroup: true, description: true },
       });
       if (!indicator) {
         throw new AppError(404, `Indicator not found: ${code}`, 'INDICATOR_NOT_FOUND');
@@ -214,6 +214,7 @@ adminIndicatorsRouter.get(
           compositeGroup: indicator.compositeGroup,
           country: indicator.country,
           uiGroup: indicator.uiGroup,
+          description: indicator.description,
         },
         count: data.length,
         data,

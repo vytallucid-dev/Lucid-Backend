@@ -151,13 +151,14 @@ type IndicatorSeed = {
   uiGroup: string;
   dataSource: DataSource;
   sourceSeriesId: string | null;
+  description?: string;
 };
 
 const INDICATORS: IndicatorSeed[] = [
   // US (14)
   {
     code: 'US_GDP_QOQ',
-    name: 'US GDP Growth QoQ',
+    name: 'US GDP Growth Rate QoQ',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'quarterly',
@@ -165,6 +166,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Latest release (Adv→2nd→Final). Take whichever print is current.',
   },
   {
     code: 'US_ISM_MFG',
@@ -176,6 +178,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'ISM, NOT S&P Global.',
   },
   {
     code: 'US_ISM_SVC',
@@ -187,6 +190,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'ISM Services (Non-Mfg), NOT S&P Global.',
   },
   {
     code: 'US_RETAIL_MOM',
@@ -198,10 +202,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Headline, NOT control group.',
   },
   {
     code: 'US_CB_CONSCONF',
-    name: 'US Consumer Confidence (Conference Board)',
+    name: 'US Consumer Confidence (Conf. Board)',
     category: 'sentiment',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -209,10 +214,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Sentiment',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Conference Board, NOT Michigan Sentiment.',
   },
   {
     code: 'US_CPI_YOY',
-    name: 'US CPI YoY',
+    name: 'US CPI YoY (Headline)',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -220,10 +226,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Headline all-items, NOT Core.',
   },
   {
     code: 'US_PPI_MOM',
-    name: 'US PPI Month-over-Month',
+    name: 'US PPI MoM (Headline)',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -231,6 +238,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Headline final demand, NOT Core.',
   },
   {
     code: 'US_PCE_YOY',
@@ -242,10 +250,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'CORE PCE (~3.4), NOT headline (~4.1). Most common error.',
   },
   {
     code: 'US_02Y_SMA',
-    name: 'US 2Y Yield 21-day SMA',
+    name: 'US 2Y Yield (21-day SMA)',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'daily',
@@ -253,10 +262,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Rates',
     dataSource: 'fred',
     sourceSeriesId: 'DGS2',
+    description: '2Y yield, 21-day SMA computed. Not a calendar print.',
   },
   {
     code: 'US_NFP',
-    name: 'US Non-Farm Payroll',
+    name: 'US Non-Farm Payrolls',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -264,6 +274,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Jobs',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Original print, not later revision.',
   },
   {
     code: 'US_UNEMP',
@@ -278,7 +289,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'US_JOBLESS_CLAIMS',
-    name: 'US Weekly Initial Jobless Claims',
+    name: 'US Initial Jobless Claims',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'weekly',
@@ -286,10 +297,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Jobs',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Initial, NOT continuing.',
   },
   {
     code: 'US_ADP',
-    name: 'US ADP Employment',
+    name: 'US ADP Employment Change',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -313,7 +325,7 @@ const INDICATORS: IndicatorSeed[] = [
   // EU (8)
   {
     code: 'EU_GDP_QOQ',
-    name: 'EU GDP Growth QoQ',
+    name: 'EU GDP Growth Rate QoQ',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'quarterly',
@@ -321,10 +333,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Latest print (flash→final).',
   },
   {
     code: 'EU_MFG_PMI',
-    name: 'EU Manufacturing PMI (Markit)',
+    name: 'EU HCOB Manufacturing PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -332,10 +345,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Eurozone aggregate, flash→final. NOT country-level.',
   },
   {
     code: 'EU_SVC_PMI',
-    name: 'EU Services PMI (Markit)',
+    name: 'EU HCOB Services PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -343,6 +357,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Eurozone aggregate, flash→final.',
   },
   {
     code: 'EU_RETAIL_MOM',
@@ -354,6 +369,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'First estimate.',
   },
   {
     code: 'EU_CCI',
@@ -368,7 +384,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'EU_CPI_YOY',
-    name: 'EU CPI YoY (HICP)',
+    name: 'EU CPI YoY (HICP Headline)',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -376,10 +392,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'HICP headline final (~mid-month). NOT flash, NOT Core.',
   },
   {
     code: 'EU_PPI_MOM',
-    name: 'EU PPI Month-over-Month',
+    name: 'EU PPI MoM (Headline)',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -387,6 +404,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Headline, NOT ex-energy.',
   },
   {
     code: 'EU_UNEMP',
@@ -403,7 +421,7 @@ const INDICATORS: IndicatorSeed[] = [
   // UK (7)
   {
     code: 'UK_GDP_MOM',
-    name: 'UK GDP Growth MoM',
+    name: 'UK GDP Growth Rate MoM',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -411,10 +429,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'MONTHLY GDP — UK only. Not QoQ.',
   },
   {
     code: 'UK_MFG_PMI',
-    name: 'UK Manufacturing PMI (S&P Global)',
+    name: 'UK S&P/CIPS Manufacturing PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -422,10 +441,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Flash→final.',
   },
   {
     code: 'UK_SVC_PMI',
-    name: 'UK Services PMI (S&P Global)',
+    name: 'UK S&P/CIPS Services PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -433,6 +453,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Flash→final.',
   },
   {
     code: 'UK_RETAIL_MOM',
@@ -444,6 +465,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Incl. fuel.',
   },
   {
     code: 'UK_GFK',
@@ -466,10 +488,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'CPI (~3.0), NOT CPIH (~3.2). Headline, not Core.',
   },
   {
     code: 'UK_PPI_MOM',
-    name: 'UK PPI Output Month-over-Month',
+    name: 'UK PPI Output MoM',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -477,6 +500,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'OUTPUT PPI, NOT Input.',
   },
   {
     code: 'UK_UNEMP',
@@ -488,12 +512,13 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Jobs',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: '3-month ILO rate.',
   },
 
   // JP (9)
   {
     code: 'JP_GDP_QOQ',
-    name: 'JP GDP Growth QoQ',
+    name: 'JP GDP Growth Rate QoQ',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'quarterly',
@@ -501,10 +526,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Latest print. Heavy prelim→final revisions.',
   },
   {
     code: 'JP_MFG_PMI',
-    name: 'JP Manufacturing PMI (au Jibun Bank)',
+    name: 'JP Jibun Bank Manufacturing PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -512,10 +538,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Flash→final.',
   },
   {
     code: 'JP_SVC_PMI',
-    name: 'JP Services PMI (au Jibun Bank)',
+    name: 'JP Jibun Bank Services PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -523,6 +550,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'WARNING: EdgeFinder source feed was frozen (Jul 2024). Enter fresh from source; verify date is current.',
   },
   {
     code: 'JP_RETAIL_YOY',
@@ -534,6 +562,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'YoY, NOT MoM.',
   },
   {
     code: 'JP_CONSCONF',
@@ -548,7 +577,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'JP_CPI_YOY',
-    name: 'JP CPI YoY',
+    name: 'JP CPI YoY (National)',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -556,10 +585,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'National all-items headline. NOT Core, NOT Tokyo.',
   },
   {
     code: 'JP_PPI_YOY',
-    name: 'JP PPI YoY',
+    name: 'JP PPI YoY (CGPI)',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -567,6 +597,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
+    description: 'Corporate Goods Price Index.',
   },
   {
     code: 'JP_HSHLD_SPEND',
@@ -975,6 +1006,7 @@ async function seedIndicators(): Promise<void> {
       uiGroup: ind.uiGroup,
       dataSource: ind.dataSource,
       sourceSeriesId: ind.sourceSeriesId,
+      description: ind.description ?? null,
     };
     await prisma.indicator.upsert({
       where: { code: ind.code },
@@ -988,6 +1020,7 @@ async function seedIndicators(): Promise<void> {
         uiGroup: payload.uiGroup,
         dataSource: payload.dataSource,
         sourceSeriesId: payload.sourceSeriesId,
+        description: payload.description,
       },
     });
   }

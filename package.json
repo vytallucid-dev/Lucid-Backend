@@ -18,7 +18,8 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "prisma:seed": "tsx prisma/seed.ts",
     "db:seed:edgefinder": "tsx prisma/seed-edgefinder.ts",
-    "cutover:dxy": "tsx scripts/cutover-dxy-to-eodhd.ts"
+    "cutover:dxy": "tsx scripts/cutover-dxy-to-eodhd.ts",
+    "update:indicator-labels": "tsx scripts/update-indicator-labels.ts"
   },
   "engines": {
     "node": ">=22.0.0"
