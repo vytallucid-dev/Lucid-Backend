@@ -4,7 +4,7 @@ import { AppError } from '@core/middleware/error-handler';
 import { prisma } from '@core/db/prisma';
 import { fetchFredIndicator, fetchAllFredIndicators } from '@modules/nifty/services/fred-indicator.service';
 import { fetchEodhdIndicator } from '@modules/nifty/services/eodhd-indicator.service';
-import { fetchCrudeBrentIndicator } from '@modules/nifty/services/crude-price-indicator.service';
+import { fetchYahooBrentIndicator } from '@modules/nifty/services/yahoo-brent-indicator.service';
 
 export const fredRouter = Router();
 
@@ -23,7 +23,7 @@ const fetchAllSchema = z.object({
 // NOTE: despite the FRED-specific path (kept so the existing frontend button
 // works without a frontend change), this endpoint is SOURCE-AWARE. The NIFTY
 // indicator-detail "Fetch" button posts here for every price indicator; DXY and
-// USD/INR are EODHD-sourced and Brent is Crude Price API-sourced, so each is
+// USD/INR are EODHD-sourced and Brent is Yahoo-sourced (BZ=F), so each is
 // routed to its service while everything else stays on FRED. All paths write to
 // the same data_points table and data_fetch_log with triggerType 'manual'.
 fredRouter.post('/fetch-fred-indicator/run', async (req: Request, res: Response, next: NextFunction) => {
@@ -50,11 +50,12 @@ fredRouter.post('/fetch-fred-indicator/run', async (req: Request, res: Response,
       select: { dataSource: true },
     });
 
-    // Crude Price API (Brent) takes no date range — /latest only returns today's
-    // spot price, so date_from/date_to are intentionally not forwarded.
+    // Yahoo (Brent) takes no date range — the service always fetches the last
+    // BRENT_FETCH_DAYS_BACK days and writes only the most recent trading day, so
+    // date_from/date_to are intentionally not forwarded.
     const result =
-      indicator?.dataSource === 'crude_price_api'
-        ? await fetchCrudeBrentIndicator({
+      indicator?.dataSource === 'yahoo'
+        ? await fetchYahooBrentIndicator({
             triggerType: 'manual',
             triggeredBy,
           })

@@ -1,0 +1,26 @@
+-- Migrate NIFTY Brent (IND_NIFTY_11_BRENT) from the Crude Price API to Yahoo
+-- Finance (BZ=F, Brent futures daily chart).
+--
+-- The Crude Price API's /latest endpoint froze: it returned the identical spot
+-- price (89.18) for 10+ consecutive days (2026-07-04 through 2026-07-13), so the
+-- 10-day direction score kept computing pct_change = 0 and never moved off
+-- neutral. Yahoo's BZ=F was verified fresh (latest close dated today) and moving
+-- (distinct closes across the last 20 days, ~$71.57-$78.52) before this switch.
+--
+-- No enum addition needed here — 'yahoo' already exists on the DataSource enum
+-- (it predates this migration; used by EdgeFinder Compass inputs before their own
+-- EODHD migration). So this is a single data UPDATE, unlike the two-migration
+-- enum-add + data-update split the crude_price_api switch required.
+--
+-- source_series_id is updated from the Crude Price API code ('BRENT_CRUDE_USD')
+-- to the Yahoo symbol ('BZ=F') for traceability.
+--
+--   IND_NIFTY_11_BRENT  BRENT_CRUDE_USD (Crude Price API /latest) -> BZ=F (Yahoo Finance chart)
+--
+-- NOTE: existing Brent data points (~480 days of FRED/EODHD history, plus the
+-- frozen 89.18 run from the Crude Price API) are intentionally LEFT IN PLACE.
+-- They supply the older end of the 10-day rolling window while Yahoo appends
+-- fresh closes going forward; the window self-heals to fresh market data over
+-- ~10 trading days. No backfill, no data clear. DXY and USD/INR are untouched
+-- and remain on EODHD.
+UPDATE "indicators" SET "data_source" = 'yahoo', "source_series_id" = 'BZ=F' WHERE "code" = 'IND_NIFTY_11_BRENT';

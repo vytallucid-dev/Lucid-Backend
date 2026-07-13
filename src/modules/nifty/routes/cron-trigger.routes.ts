@@ -5,7 +5,7 @@ import { logger } from '@core/utils/logger';
 import { runScorecardAssemblyCron } from '@modules/nifty/jobs/scorecard-assembly.cron';
 import { runFredFetchAll } from '@modules/nifty/jobs/fred-fetch.job';
 import { runEodhdFetchAll } from '@modules/nifty/jobs/eodhd-fetch.job';
-import { runCrudeBrentFetch } from '@modules/nifty/jobs/crude-price-fetch.job';
+import { runYahooBrentFetch } from '@modules/nifty/jobs/yahoo-brent-fetch.job';
 import { runNseVixScrape } from '@modules/nifty/jobs/nse-vix.job';
 import { runNseFiiDiiScrape } from '@modules/nifty/jobs/nse-fii-dii.job';
 import { runNseParticipantOiScrape } from '@modules/nifty/jobs/nse-participant-oi.job';
@@ -26,7 +26,7 @@ type JobHandler = () => Promise<void>;
 const JOB_HANDLERS: Record<string, JobHandler> = {
   fred_fetch: runFredFetchAll,
   eodhd_fetch: runEodhdFetchAll,
-  crude_price_fetch: runCrudeBrentFetch,
+  yahoo_brent_fetch: runYahooBrentFetch,
   nse_vix: runNseVixScrape,
   nse_fii_dii: runNseFiiDiiScrape,
   nse_participant_oi: runNseParticipantOiScrape,
@@ -44,7 +44,7 @@ const triggerBodySchema = z.object({
   job_name: z.enum([
     'fred_fetch',
     'eodhd_fetch',
-    'crude_price_fetch',
+    'yahoo_brent_fetch',
     'nse_vix',
     'nse_fii_dii',
     'nse_participant_oi',

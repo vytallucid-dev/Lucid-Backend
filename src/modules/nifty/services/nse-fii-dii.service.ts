@@ -253,17 +253,18 @@ async function persistFiiDii(
     });
 
     // Ind 7 — DII absorption. Stored EVERY day now (never null):
-    //   FII net seller → ratio = dii_net / abs(fii_sell), fii_was_net_seller = true.
+    //   FII net seller → ratio = dii_net / abs(fii_net), fii_was_net_seller = true.
     //   FII net buyer  → 0 (nothing to absorb), fii_was_net_seller = false.
     // The rolling_ratio_excluding handler averages ONLY fii_was_net_seller === true
     // days, so the buyer-day 0s are display-only and never enter the rolling average.
     const diiResult = await handle(diiInd.id, diiInd.code, diiAbsorption, 'derived', {
-      formula: 'dii_net / abs(fii_sell)',
+      formula: 'dii_net / abs(fii_net)',
       fii_was_net_seller: fiiWasNetSeller,
       dii_net_crore: diiNet,
       dii_buy_crore: diiBuy,
       dii_sell_crore: diiSell,
       fii_sell_crore: fiiSell,
+      fii_net_crore: fiiNet,
       derivedFrom: FII_FLOW_INDICATOR_CODE,
     });
 
@@ -349,22 +350,22 @@ export async function scrapeNseFiiDii(
     const fiiWasNetSeller = fiiNet < 0;
 
     // Absorption numerator is DII NET (buy − sell), NOT gross buy. Two regimes:
-    //   Situation A — FII net seller: ratio = diiNet / abs(fiiSell). Scoreable.
+    //   Situation A — FII net seller: ratio = diiNet / abs(fiiNet). Scoreable.
     //     diiNet may be negative (DII also net selling → "both fleeing").
     //   Situation B — FII net buyer: nothing to absorb → absorption = 0 (a real
     //     stored value, not null). Display/series-completeness only; excluded from
     //     the rolling average via fii_was_net_seller = false.
     let diiAbsorption: number;
     if (fiiWasNetSeller) {
-      if (Math.abs(fiiSell) < 0.01) {
+      if (Math.abs(fiiNet) < 0.01) {
         throw new AppError(
           502,
-          'FII sell value too small to compute absorption ratio',
+          'FII net value too small to compute absorption ratio',
           'INVALID_FIIDII_INPUTS',
-          { fiiSell },
+          { fiiNet },
         );
       }
-      diiAbsorption = diiNet / Math.abs(fiiSell);
+      diiAbsorption = diiNet / Math.abs(fiiNet);
     } else {
       diiAbsorption = 0;
     }

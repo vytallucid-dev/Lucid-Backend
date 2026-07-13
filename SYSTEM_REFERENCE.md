@@ -236,8 +236,8 @@ The scoring handler reads the last 10 `isCurrent = true` data points for this in
 ### Ind 7 — `IND_NIFTY_07_DII_ABSORPTION` — DII Absorption Ratio
 
 **How data accumulates:**  
-Derived in the same NSE FII/DII scrape call as Ind 6. Formula: `dii_net / abs(fii_sell)`, where `dii_net` is NSE's own precomputed DII net (buy − sell). A data point is written **every** trading day:
-- **FII net seller** → ratio = `dii_net / abs(fii_sell)`; `sourceMetadata.fii_was_net_seller = true`. This is the scoreable case. `dii_net` may be negative (DII also net selling → "both fleeing"), which yields a negative ratio.
+Derived in the same NSE FII/DII scrape call as Ind 6. Formula: `dii_net / abs(fii_net)`, where `dii_net` is NSE's own precomputed DII net (buy − sell). A data point is written **every** trading day:
+- **FII net seller** → ratio = `dii_net / abs(fii_net)`; `sourceMetadata.fii_was_net_seller = true`. This is the scoreable case. `dii_net` may be negative (DII also net selling → "both fleeing"), which yields a negative ratio.
 - **FII net buyer** → absorption = `0` (a real stored value, not null); `sourceMetadata.fii_was_net_seller = false`. Nothing to absorb when FII isn't selling, so neutral by definition. These 0-valued rows are for display/series-completeness ONLY.
 
 **Modes of filling:**  
@@ -256,10 +256,10 @@ The buyer-day 0-valued rows carry `fii_was_net_seller = false` and are **exclude
 `job_name = 'scrape_nse_fii_dii'` (same row as Ind 6)
 
 **Data point key:**  
-`source = 'derived'`, `sourceMetadata.formula = 'dii_net / abs(fii_sell)'`, plus `dii_net_crore`, `dii_buy_crore`, `dii_sell_crore`, `fii_sell_crore`, `fii_was_net_seller`.
+`source = 'derived'`, `sourceMetadata.formula = 'dii_net / abs(fii_net)'`, plus `dii_net_crore`, `dii_buy_crore`, `dii_sell_crore`, `fii_sell_crore`, `fii_net_crore`, `fii_was_net_seller`.
 
 **Special conditions:**  
-A data point IS now written on FII-net-buyer days (value `0`), a change from the prior behavior where buyer days stored nothing. Existing historical rows written before this change keep the OLD `dii_buy / abs(fii_sell)` formula and OLD metadata — they were not recomputed (no backfill; DII sell/net were never captured for those dates and NSE only returns the latest day).
+A data point IS now written on FII-net-buyer days (value `0`), a change from the prior behavior where buyer days stored nothing. Existing historical rows written before this change keep OLD formulas and OLD metadata — they were not recomputed (no backfill). Two prior formula generations exist in history: the original `dii_buy / abs(fii_sell)` and an intermediate `dii_net / abs(fii_sell)`; the current formula is `dii_net / abs(fii_net)`. `sourceMetadata.formula` on each row identifies which formula produced it.
 
 ---
 
@@ -534,7 +534,7 @@ POST /api/admin/cron/run                    → fire any job by name
 | `IND_NIFTY_04_RBI_RATE` | `manual` | — |
 | `IND_NIFTY_05_IIP` | `fred` | `seriesId: 'INDPROINDMISMEI'` |
 | `IND_NIFTY_06_FII_FLOW` | `nse_scrape` | `endpoint: '/api/fiidiiTradeReact'` |
-| `IND_NIFTY_07_DII_ABSORPTION` | `derived` | `formula: 'dii_net / abs(fii_sell)'`, `dii_net_crore`, `dii_buy_crore`, `dii_sell_crore`, `fii_sell_crore`, `fii_was_net_seller` |
+| `IND_NIFTY_07_DII_ABSORPTION` | `derived` | `formula: 'dii_net / abs(fii_net)'`, `dii_net_crore`, `dii_buy_crore`, `dii_sell_crore`, `fii_sell_crore`, `fii_net_crore`, `fii_was_net_seller` |
 | `IND_NIFTY_08_VIX` | `nse_scrape` | `endpoint: '/api/allIndices'` |
 | `IND_NIFTY_09_USD_WEAKNESS` | `derived` | `usdScorecardDate`, `indicatorBreakdown` |
 | `IND_NIFTY_10_DXY` | `fred` | `seriesId: 'DTWEXBGS'` |

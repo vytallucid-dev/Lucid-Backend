@@ -100,11 +100,11 @@ const SCORING_RULES_V2: Record<
     ruleType: 'custom',
     ruleDefinition: {
       type: 'rolling_ratio_excluding',
-      // Absorption = dii_net / abs(fii_sell) on FII-net-seller days. min is
+      // Absorption = dii_net / abs(fii_net) on FII-net-seller days. min is
       // inclusive (>=), max is exclusive (<). A negative rolling average means DII
       // was also net-selling ("both fleeing") — scored -2 and flagged
       // DII_NET_SELLER_REGIME by the handler.
-      formula: 'dii_net / abs(fii_sell)',
+      formula: 'dii_net / abs(fii_net)',
       lookback_trading_days: 5,
       exclusion: 'fii_net_buyer_days',
       tiers: [

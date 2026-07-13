@@ -153,10 +153,12 @@ async function seedIndicators(): Promise<void> {
       frequency: 'daily' as const,
       unit: 'USD_per_barrel',
       // Migrated FRED (DCOILBRENTEU) -> EODHD commodities (BRENT) -> Crude Price API
-      // (BRENT_CRUDE_USD, /latest spot). EODHD's commodity feed was FRED-routed and
-      // lagged; the Crude Price API gives fresh market-sourced spot prices.
-      dataSource: 'crude_price_api' as const,
-      sourceSeriesId: 'BRENT_CRUDE_USD',
+      // (BRENT_CRUDE_USD, /latest spot) -> Yahoo Finance (BZ=F, Brent futures daily
+      // chart). Both EODHD's commodity feed and the Crude Price API's /latest spot
+      // froze (the latter stuck at 89.18 for 10+ consecutive days); Yahoo's BZ=F
+      // was verified fresh and moving before this switch.
+      dataSource: 'yahoo' as const,
+      sourceSeriesId: 'BZ=F',
       displayOrder: 11,
       compositeGroup: 'external' as const,
     },
@@ -279,7 +281,7 @@ async function seedScoringRules(): Promise<void> {
       ruleType: 'threshold',
       ruleDefinition: {
         type: 'threshold',
-        formula: 'dii_net / abs(fii_sell)',
+        formula: 'dii_net / abs(fii_net)',
         positive_if: 'ratio >= 0.75',
         negative_if: 'ratio < 0 (DII also net selling)',
         neutral_otherwise: true,

@@ -4,7 +4,7 @@ import { runScorecardAssemblyCron } from './scorecard-assembly.cron';
 import { runNiftyInd9BridgeCron } from './ind9-bridge.job';
 import { registerFredFetchCron } from './fred-fetch.job';
 import { registerEodhdFetchCron } from './eodhd-fetch.job';
-import { registerCrudePriceFetchCron } from './crude-price-fetch.job';
+import { registerYahooBrentFetchCron } from './yahoo-brent-fetch.job';
 import { registerNseVixCron } from './nse-vix.job';
 import { registerNseFiiDiiCron } from './nse-fii-dii.job';
 import { registerNseParticipantOiCron } from './nse-participant-oi.job';
@@ -47,10 +47,11 @@ export function registerNiftyCrons(): void {
   // EODHD price fetch (DXY, USD/INR) — 02:30 UTC, same slot FRED used for these.
   // FRED cron stays for US02Y / EdgeFinder macro series; the two coexist.
   registerEodhdFetchCron();
-  // Crude Price API fetch (Brent only) — 02:30 UTC, same slot as the EODHD price
-  // fetch. Brent moved off EODHD's lagging FRED-routed commodity feed; runs daily
-  // before the 14:30 UTC scorecard assembly.
-  registerCrudePriceFetchCron();
+  // Yahoo Finance fetch (Brent only, BZ=F) — 02:35 UTC, same slot the Crude Price
+  // API cron used. Brent moved off the Crude Price API, which froze at a single
+  // value for 10+ consecutive days; runs daily before the 14:30 UTC scorecard
+  // assembly.
+  registerYahooBrentFetchCron();
   registerNseVixCron();
   registerNseFiiDiiCron();
   registerNseParticipantOiCron();
