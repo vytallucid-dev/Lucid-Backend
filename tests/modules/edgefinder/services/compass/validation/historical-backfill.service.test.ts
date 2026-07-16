@@ -18,23 +18,38 @@ vi.mock('@modules/edgefinder/services/compass/inputs/yield-curve-input.service',
 vi.mock('@modules/edgefinder/services/compass/inputs/dxy-trend-input.service', () => ({
   ingestDxyTrendInput: vi.fn(),
 }));
-vi.mock('@modules/edgefinder/services/compass/inputs/gold-dxy-corr-input.service', () => ({
-  ingestGoldDxyCorrInput: vi.fn(),
+vi.mock('@modules/edgefinder/services/compass/inputs/vix-term-structure-input.service', () => ({
+  ingestVixTermStructureInput: vi.fn(),
 }));
 vi.mock('@modules/edgefinder/services/compass/inputs/us-data-stack-input.service', () => ({
   ingestUsDataStackInput: vi.fn(),
 }));
+vi.mock('@modules/edgefinder/services/compass/inputs/usdjpy-price-input.service', () => ({
+  ingestUsdJpyPriceInput: vi.fn(),
+}));
+vi.mock('@modules/edgefinder/services/compass/inputs/us02y-close-input.service', () => ({
+  ingestUs02yCloseInput: vi.fn(),
+}));
 vi.mock('@modules/edgefinder/services/compass/compass-classifier.service', () => ({
   runCompassClassifier: vi.fn(),
 }));
+vi.mock('@core/repositories/compass-config.repository', () => ({
+  compassConfigRepository: {
+    resolveForDate: vi.fn(),
+  },
+}));
 
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
+import { compassConfigRepository } from '@core/repositories/compass-config.repository';
+import { COMPASS_CONFIG_V1_FIXTURE } from '../compass-config.fixture';
 import { ingestVixInput } from '@modules/edgefinder/services/compass/inputs/vix-input.service';
 import { ingestHyOasInput } from '@modules/edgefinder/services/compass/inputs/hy-oas-input.service';
 import { ingestYieldCurveInput } from '@modules/edgefinder/services/compass/inputs/yield-curve-input.service';
 import { ingestDxyTrendInput } from '@modules/edgefinder/services/compass/inputs/dxy-trend-input.service';
-import { ingestGoldDxyCorrInput } from '@modules/edgefinder/services/compass/inputs/gold-dxy-corr-input.service';
+import { ingestVixTermStructureInput } from '@modules/edgefinder/services/compass/inputs/vix-term-structure-input.service';
 import { ingestUsDataStackInput } from '@modules/edgefinder/services/compass/inputs/us-data-stack-input.service';
+import { ingestUsdJpyPriceInput } from '@modules/edgefinder/services/compass/inputs/usdjpy-price-input.service';
+import { ingestUs02yCloseInput } from '@modules/edgefinder/services/compass/inputs/us02y-close-input.service';
 import { runCompassClassifier } from '@modules/edgefinder/services/compass/compass-classifier.service';
 import {
   backfillWindow,
@@ -47,11 +62,19 @@ const mockedVix = ingestVixInput as unknown as ReturnType<typeof vi.fn>;
 const mockedHy = ingestHyOasInput as unknown as ReturnType<typeof vi.fn>;
 const mockedYc = ingestYieldCurveInput as unknown as ReturnType<typeof vi.fn>;
 const mockedDxy = ingestDxyTrendInput as unknown as ReturnType<typeof vi.fn>;
-const mockedCorr = ingestGoldDxyCorrInput as unknown as ReturnType<typeof vi.fn>;
+const mockedCorr = ingestVixTermStructureInput as unknown as ReturnType<typeof vi.fn>;
 const mockedStack = ingestUsDataStackInput as unknown as ReturnType<typeof vi.fn>;
+const mockedJpy = ingestUsdJpyPriceInput as unknown as ReturnType<typeof vi.fn>;
+const mockedUs02y = ingestUs02yCloseInput as unknown as ReturnType<typeof vi.fn>;
 const mockedClassifier = runCompassClassifier as unknown as ReturnType<typeof vi.fn>;
+const mockedResolveConfig =
+  compassConfigRepository.resolveForDate as unknown as ReturnType<typeof vi.fn>;
 
-const inputMocks = [mockedVix, mockedHy, mockedYc, mockedDxy, mockedCorr, mockedStack];
+const inputMocks = [mockedVix, mockedHy, mockedYc, mockedDxy, mockedCorr, mockedStack, mockedJpy, mockedUs02y];
+// Inputs called via a config-less wrapper lambda (date, isValidation) — their
+// mocks see a 2-arg call, unlike the other 6 (date, config, true).
+const configlessMocks = [mockedJpy, mockedUs02y];
+const configfulMocks = [mockedVix, mockedHy, mockedYc, mockedDxy, mockedCorr, mockedStack];
 
 function utc(y: number, m: number, d: number): Date {
   return new Date(Date.UTC(y, m - 1, d));
@@ -94,6 +117,7 @@ describe('backfillWindow', () => {
     vi.clearAllMocks();
     mockedStart.mockResolvedValue({ id: 'log-1' });
     mockedComplete.mockResolvedValue(undefined);
+    mockedResolveConfig.mockResolvedValue(COMPASS_CONFIG_V1_FIXTURE);
     inputMocks.forEach((m) => m.mockResolvedValue(undefined));
     mockedClassifier.mockResolvedValue({
       logId: 'cls-log',
@@ -109,15 +133,25 @@ describe('backfillWindow', () => {
     endDate: utc(2020, 3, 18), // Wed → 3 trading days
   };
 
-  it('calls each of 6 input services with each trading day and isValidation=true', async () => {
+  it('calls each of 8 input services with each trading day and isValidation=true', async () => {
     const result = await backfillWindow(tinyWindow, 'admin-user');
     expect(result.totalTradingDays).toBe(3);
 
     for (const m of inputMocks) {
       expect(m).toHaveBeenCalledTimes(3);
-      // Every call has 2 args: (date, true)
+    }
+
+    // The config-less inputs (USDJPY_PRICE, US02Y_CLOSE) are called as
+    // (date, isValidation) via a wrapper lambda, so their mocks see a 2-arg
+    // call — unlike the other 6 (date, config, true).
+    for (const m of configlessMocks) {
       m.mock.calls.forEach((call) => {
         expect(call[1]).toBe(true);
+      });
+    }
+    for (const m of configfulMocks) {
+      m.mock.calls.forEach((call) => {
+        expect(call[2]).toBe(true);
       });
     }
   });
@@ -172,7 +206,7 @@ describe('backfillWindow', () => {
     expect(mockedComplete.mock.calls[0][0].status).toBe('success');
   });
 
-  it('runs the 6 inputs in parallel within a single day', async () => {
+  it('runs US_DATA_STACK before the other 7, which run in parallel with each other', async () => {
     const startTimes: Record<string, number> = {};
     const slowMock = (code: string) =>
       async (): Promise<void> => {
@@ -185,15 +219,23 @@ describe('backfillWindow', () => {
     mockedDxy.mockImplementation(slowMock('DXY'));
     mockedCorr.mockImplementation(slowMock('CORR'));
     mockedStack.mockImplementation(slowMock('STACK'));
+    mockedJpy.mockImplementation(slowMock('JPY'));
+    mockedUs02y.mockImplementation(slowMock('US02Y'));
 
     const singleDay = { ...tinyWindow, endDate: tinyWindow.startDate };
     await backfillWindow(singleDay);
 
-    // All 6 inputs started within 10ms of each other = parallel
-    const values = Object.values(startTimes);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
+    // The other 5 (excluding US_DATA_STACK) started within 10ms of each other = parallel
+    const { STACK: stackStart, ...rest } = startTimes;
+    const restValues = Object.values(rest);
+    const min = Math.min(...restValues);
+    const max = Math.max(...restValues);
     expect(max - min).toBeLessThan(15);
+
+    // US_DATA_STACK (YIELD_2S10S depends on its persisted Jobs sub-check)
+    // started and fully completed strictly before the others began.
+    expect(stackStart).toBeLessThan(min);
+    expect(min - stackStart).toBeGreaterThanOrEqual(20);
   });
 
   it('writes fetch_log start with windowName and trigger=backfill', async () => {

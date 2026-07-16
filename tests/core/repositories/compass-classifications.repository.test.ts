@@ -44,20 +44,14 @@ const txMock = {
   ),
   create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
     const id = `cc-${storage.nextId++}`;
-    const row: ClassificationRow = {
+    // Spread ALL provided columns (including the Phase 4/6 gate-audit fields)
+    // so the match/skip comparison on a re-run sees them back.
+    const row = {
+      ...data,
       id,
-      classificationDate: data.classificationDate as Date,
-      candidateRegime: data.candidateRegime as string,
-      activeRegime: data.activeRegime as string,
-      persistenceDaysCount: data.persistenceDaysCount as number,
-      crisisOverrideFired: data.crisisOverrideFired as boolean,
-      totalGreenWeight: data.totalGreenWeight as Prisma.Decimal,
-      totalYellowWeight: data.totalYellowWeight as Prisma.Decimal,
-      totalRedWeight: data.totalRedWeight as Prisma.Decimal,
-      voteBreakdown: data.voteBreakdown,
       isCurrent: (data.isCurrent as boolean) ?? true,
       isValidation: (data.isValidation as boolean) ?? false,
-    };
+    } as unknown as ClassificationRow;
     storage.rows.push(row);
     return row;
   }),
@@ -121,6 +115,17 @@ function baseInput(
     activeRegime: 'Caution',
     persistenceDaysCount: 0,
     crisisOverrideFired: false,
+    finalRegime: 'Caution',
+    shockAActive: false,
+    shockBActive: false,
+    us02yClose: null,
+    us02ySma21: null,
+    rateGateHawkish: false,
+    override3SuppressedByGate: false,
+    override5SuppressedByGate: false,
+    fedConstraint: '',
+    override2SuppressedByConstraint: false,
+    overridesActive: [],
     totalGreenWeight: 2.5,
     totalYellowWeight: 3.5,
     totalRedWeight: 2.0,

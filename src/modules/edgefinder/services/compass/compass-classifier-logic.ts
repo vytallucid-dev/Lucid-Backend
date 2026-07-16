@@ -1,13 +1,5 @@
 import type { ColorBand } from './compass-bands';
-
-export const COMPASS_INPUT_WEIGHTS: Record<string, number> = {
-  VIX_5D_AVG: 1.0,
-  HY_OAS: 1.5,
-  YIELD_2S10S: 1.5,
-  DXY_TREND: 1.0,
-  GOLD_DXY_CORR: 1.0,
-  US_DATA_STACK: 2.0,
-};
+import type { CompassConfigDefinition } from './compass-config.types';
 
 export type Regime = 'Risk-On' | 'Caution' | 'Risk-Off';
 
@@ -24,12 +16,15 @@ export interface InputWithBand {
 
 /**
  * Sum weights of inputs grouped by color band.
- * Throws if an inputCode is not in COMPASS_INPUT_WEIGHTS.
+ * Throws if an inputCode is not in config.weights.
  */
-export function sumVoteWeights(inputs: InputWithBand[]): VoteWeights {
+export function sumVoteWeights(
+  inputs: InputWithBand[],
+  config: CompassConfigDefinition,
+): VoteWeights {
   const totals: VoteWeights = { green: 0, yellow: 0, red: 0 };
   for (const input of inputs) {
-    const weight = COMPASS_INPUT_WEIGHTS[input.inputCode];
+    const weight = config.weights[input.inputCode];
     if (weight === undefined) {
       throw new Error(`Unknown input code: ${input.inputCode}`);
     }
@@ -40,51 +35,27 @@ export function sumVoteWeights(inputs: InputWithBand[]): VoteWeights {
   return totals;
 }
 
-export interface CrisisCheckInput {
-  vixFiveDayAvg: number | null;
-  hyOasLevel: number | null;
-}
-
-export interface CrisisCheckResult {
-  fired: boolean;
-  vixFiveDayAvg: number | null;
-  hyOasLevel: number | null;
-}
-
-/**
- * Crisis override: VIX 5d avg > 30 AND HY OAS level > 7.0 (percent units).
- * Returns fired=false if either value is null (insufficient data).
- */
-export function checkCrisisOverride(input: CrisisCheckInput): CrisisCheckResult {
-  if (input.vixFiveDayAvg === null || input.hyOasLevel === null) {
-    return {
-      fired: false,
-      vixFiveDayAvg: input.vixFiveDayAvg,
-      hyOasLevel: input.hyOasLevel,
-    };
-  }
-  const fired = input.vixFiveDayAvg > 30 && input.hyOasLevel > 7.0;
-  return {
-    fired,
-    vixFiveDayAvg: input.vixFiveDayAvg,
-    hyOasLevel: input.hyOasLevel,
-  };
-}
-
 export interface CandidateInput {
   voteWeights: VoteWeights;
-  crisisFired: boolean;
 }
 
 /**
- * Determine candidate regime from vote weights and crisis status.
- * Crisis override forces Risk-Off regardless of vote weights.
+ * Determine candidate regime from vote weights alone.
+ *
+ * Phase 4 retires the crisis clause (checkCrisisOverride) — same-day shock
+ * detection is now the Shock Layer's Trigger A, evaluated separately in
+ * compass-classifier.service.ts AFTER this function and AFTER the
+ * persistence machine, and Trigger A never feeds back into candidate/active
+ * regime computation. This function and resolveActiveRegime below are
+ * unaware of shocks entirely, by design (see compass-shock-layer.ts).
  */
-export function determineCandidateRegime(input: CandidateInput): Regime {
-  if (input.crisisFired) return 'Risk-Off';
+export function determineCandidateRegime(
+  input: CandidateInput,
+  config: CompassConfigDefinition,
+): Regime {
   const { green, red } = input.voteWeights;
-  if (red >= 4) return 'Risk-Off';
-  if (green >= 5 && red <= 1) return 'Risk-On';
+  if (red >= config.candidateRegime.redRiskOffAt) return 'Risk-Off';
+  if (green >= config.candidateRegime.greenRiskOnAt && red <= config.candidateRegime.redRiskOnCeiling) return 'Risk-On';
   return 'Caution';
 }
 
@@ -101,33 +72,54 @@ export interface ActiveRegimeResolution {
 
 export interface ResolveActiveRegimeInput {
   candidateRegime: Regime;
-  crisisFired: boolean;
   prior: PriorClassification | null;
 }
 
+/** Severity ordering for the asymmetric persistence machine: higher = more severe. */
+const REGIME_SEVERITY: Record<Regime, number> = {
+  'Risk-On': 0,
+  Caution: 1,
+  'Risk-Off': 2,
+};
+
 /**
- * Resolve today's active regime given today's candidate and the prior day's state.
+ * Resolve today's active regime given today's raw candidate and the prior
+ * day's state — the v2 asymmetric persistence machine.
  *
- * persistenceDaysCount counts the streak of candidates that diverge from the
- * current active regime. When it reaches 5, active flips and the counter resets.
+ * Per-day state is (active_regime, pending_label, pending_count). Only
+ * active_regime and persistenceDaysCount (== pending_count) are persisted;
+ * pending_label is NOT stored as its own column. It is recovered from
+ * `prior.candidateRegime` whenever `prior.persistenceDaysCount > 0` — sound
+ * because the classifier always persists that day's own raw candidate as
+ * candidateRegime on that row (see compass-classifier.service.ts), and this
+ * machine always sets pending_label := raw_label on any day it doesn't
+ * clear pending entirely. So prior.candidateRegime IS prior's pending_label
+ * whenever prior.persistenceDaysCount > 0; when it's 0, pending is null.
+ *
+ * Phase 4: this machine runs EVERY day, unconditionally, with NO awareness
+ * of the Shock Layer — a shock never writes to active_regime, pending_label,
+ * or pending_count (see compass-shock-layer.ts / compass-classifier.service.ts,
+ * which apply the shock's Risk-Off override to a separate `final_regime`
+ * field AFTER this function runs, leaving this machine's own state exactly
+ * as if no shock existed).
  *
  * Rules:
- *   1. Crisis override → active=Risk-Off, count=0 (same-day, no streak required).
- *   2. Bootstrap (no prior) → active=Caution; count=0 if candidate matches Caution,
- *      else count=1 (day 1 of a streak toward the candidate).
- *   3. Normal:
- *      a. candidate == prior.activeRegime → count=0 (at active, no streak).
- *      b. candidate == prior.candidateRegime AND prior.count > 0 → continue streak.
- *         If new count >= 5 → flip active to candidate, count=0.
- *      c. otherwise → new streak with count=1, active unchanged.
+ *   1. Bootstrap (no prior) → active=Caution; candidate==Caution clears
+ *      pending (count=0), otherwise this is day 1 of a new pending streak
+ *      (count=1).
+ *   2. Normal, every day unconditionally:
+ *      a. candidate == prior.activeRegime → pending cleared (count=0).
+ *      b. otherwise → pending_label = candidate (continuing if it matches
+ *         prior's pending_label, else resetting to count=1); required is
+ *         3 if severity(candidate) > severity(prior.activeRegime) else 5;
+ *         if the new count >= required → active flips directly to
+ *         candidate (regardless of how many severity steps away it is),
+ *         count resets to 0.
  */
 export function resolveActiveRegime(
   input: ResolveActiveRegimeInput,
+  config: CompassConfigDefinition,
 ): ActiveRegimeResolution {
-  if (input.crisisFired) {
-    return { activeRegime: 'Risk-Off', persistenceDaysCount: 0 };
-  }
-
   if (input.prior === null) {
     return {
       activeRegime: 'Caution',
@@ -142,25 +134,30 @@ export function resolveActiveRegime(
     };
   }
 
-  if (
-    input.candidateRegime === input.prior.candidateRegime &&
-    input.prior.persistenceDaysCount > 0
-  ) {
-    const newCount = input.prior.persistenceDaysCount + 1;
-    if (newCount >= 5) {
-      return {
-        activeRegime: input.candidateRegime,
-        persistenceDaysCount: 0,
-      };
-    }
+  // pending_label as of `prior`: prior.candidateRegime whenever
+  // prior.persistenceDaysCount > 0, else there was no pending streak.
+  const priorPendingLabel: Regime | null =
+    input.prior.persistenceDaysCount > 0 ? input.prior.candidateRegime : null;
+
+  const newCount =
+    input.candidateRegime === priorPendingLabel
+      ? input.prior.persistenceDaysCount + 1
+      : 1;
+
+  const required =
+    REGIME_SEVERITY[input.candidateRegime] > REGIME_SEVERITY[input.prior.activeRegime]
+      ? config.persistence.daysToHigherSeverity
+      : config.persistence.daysToLowerSeverity;
+
+  if (newCount >= required) {
     return {
-      activeRegime: input.prior.activeRegime,
-      persistenceDaysCount: newCount,
+      activeRegime: input.candidateRegime,
+      persistenceDaysCount: 0,
     };
   }
 
   return {
     activeRegime: input.prior.activeRegime,
-    persistenceDaysCount: 1,
+    persistenceDaysCount: newCount,
   };
 }

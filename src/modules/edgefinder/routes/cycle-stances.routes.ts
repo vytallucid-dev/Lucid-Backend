@@ -9,9 +9,13 @@ export const cycleStancesRouter = Router();
 
 const VALID_CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY'] as const;
 const VALID_STANCES = ['CUTTING', 'NEUTRAL', 'HIKING'] as const;
+// Phase 6 (Addendum 8B): the Fed constraint for the gold override gate. A
+// global, effective-dated judgment value stored on the USD cycle-stance rows.
+const VALID_FED_CONSTRAINTS = ['FREE', 'CONSTRAINED'] as const;
 
 type CurrencyCode = (typeof VALID_CURRENCIES)[number];
 type Stance = (typeof VALID_STANCES)[number];
+type FedConstraint = (typeof VALID_FED_CONSTRAINTS)[number];
 
 const updateStanceSchema = z.object({
   stance: z.enum(VALID_STANCES),
@@ -20,6 +24,8 @@ const updateStanceSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD')
     .optional(),
   notes: z.string().max(500).optional(),
+  // Only meaningful on USD rows (Fed ↔ USD). Ignored for other currencies.
+  fedConstraint: z.enum(VALID_FED_CONSTRAINTS).optional(),
 });
 
 /**
@@ -55,9 +61,12 @@ cycleStancesRouter.get('/', async (_req: Request, res: Response, next: NextFunct
         effectiveFrom: s.effectiveFrom.toISOString().slice(0, 10),
         effectiveTo: s.effectiveTo ? s.effectiveTo.toISOString().slice(0, 10) : null,
         notes: s.notes ?? null,
+        // Phase 6: only USD rows carry it; null elsewhere. Absent → FREE at read.
+        fedConstraint: s.currencyCode === 'USD' ? s.fedConstraint ?? 'FREE' : null,
       })),
       validCurrencies: VALID_CURRENCIES,
       validStances: VALID_STANCES,
+      validFedConstraints: VALID_FED_CONSTRAINTS,
     });
   } catch (err) {
     next(err);
@@ -94,6 +103,9 @@ cycleStancesRouter.put(
 
       const { stance, notes } = parsed.data;
       const effectiveFromRaw = parsed.data.effectiveFrom;
+      // fedConstraint is only stored on USD rows (Fed ↔ USD); ignored elsewhere.
+      const fedConstraint: FedConstraint | undefined =
+        currencyCode === 'USD' ? parsed.data.fedConstraint : undefined;
 
       const effectiveFrom = effectiveFromRaw
         ? new Date(`${effectiveFromRaw}T00:00:00.000Z`)
@@ -123,12 +135,15 @@ cycleStancesRouter.put(
           if (sameEffectiveFrom) {
             // Same effectiveFrom — update the existing row in-place to avoid unique constraint violation
             const isUnchanged =
-              openRow.stance === stance && (notes === undefined || notes === openRow.notes);
+              openRow.stance === stance &&
+              (notes === undefined || notes === openRow.notes) &&
+              (fedConstraint === undefined || fedConstraint === openRow.fedConstraint);
             const updated = await tx.currencyCycleStance.update({
               where: { id: openRow.id },
               data: {
                 stance: stance as Stance,
                 notes: notes ?? openRow.notes,
+                fedConstraint: fedConstraint ?? openRow.fedConstraint,
               },
             });
             return {
@@ -147,7 +162,9 @@ cycleStancesRouter.put(
           });
         }
 
-        // Insert the new stance row (only reached when effectiveFrom differs from open row)
+        // Insert the new stance row (only reached when effectiveFrom differs from open row).
+        // fedConstraint carries forward from the closed row unless a new value
+        // was supplied — so a plain stance change on USD doesn't silently reset it.
         const newRow = await tx.currencyCycleStance.create({
           data: {
             currencyCode,
@@ -155,6 +172,7 @@ cycleStancesRouter.put(
             effectiveFrom,
             effectiveTo: null,
             notes: notes ?? null,
+            fedConstraint: fedConstraint ?? openRow?.fedConstraint ?? null,
           },
         });
 
@@ -174,6 +192,8 @@ cycleStancesRouter.put(
             ? result.row.effectiveTo.toISOString().slice(0, 10)
             : null,
           notes: result.row.notes ?? null,
+          fedConstraint:
+            result.row.currencyCode === 'USD' ? result.row.fedConstraint ?? 'FREE' : null,
         },
       });
     } catch (err) {

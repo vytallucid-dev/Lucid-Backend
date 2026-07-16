@@ -26,6 +26,30 @@ export interface OverrideAdjustment {
   overridesFired: OverrideEntry[];
 }
 
+/**
+ * Phase 6 gate context — the classifier's already-resolved, per-date gate
+ * decisions, passed in so this function stays pure (no DB/date access). See
+ * compass-override-gates.ts for how these are computed.
+ *
+ *   regimePathRiskOff       = the regime activation path is Risk-Off (either
+ *                             the standard machine OR a Trigger A shock).
+ *   override2Active         = gold Override 2 permitted (8B: fed CONSTRAINED).
+ *   override3And5Active     = JPY Overrides 3 & 5 permitted (8A rate gate, or
+ *                             Trigger B bypass).
+ *   shockBActive            = carry shock — forces Overrides 3 & 5 even when
+ *                             regimePathRiskOff is false (final_regime is not
+ *                             changed by Trigger B).
+ *
+ * Overrides 1 & 4 are UNGATED — they fire whenever regimePathRiskOff, exactly
+ * as before (no gate touches them).
+ */
+export interface OverrideGateContext {
+  regimePathRiskOff: boolean;
+  override2Active: boolean;
+  override3And5Active: boolean;
+  shockBActive: boolean;
+}
+
 const GOLD_INFLATION_FLIP_CODES = new Set(['US_CPI_YOY', 'US_PPI_MOM', 'US_PCE_YOY']);
 const US_JOBS_CODES = new Set([
   'US_NFP',
@@ -37,7 +61,15 @@ const US_JOBS_CODES = new Set([
 
 /**
  * Apply Risk-Off Compass overrides for a single asset and return the adjustment
- * to add to the base score. In Risk-On or Caution: returns zero adjustment.
+ * to add to the base score.
+ *
+ * Phase 6: the activation path is the GATE CONTEXT, not a bare
+ * `regime === 'Risk-Off'` check — Overrides 1 & 4 (ungated) fire on
+ * regimePathRiskOff (which now also captures Trigger-A-forced Risk-Off);
+ * Override 2 (gold) additionally requires gate.override2Active (8B fed
+ * constraint); Override 3 (JPY) additionally requires gate.override3And5Active
+ * (8A rate gate, or a Trigger B bypass). Trigger B can activate 3 even when
+ * regimePathRiskOff is false.
  *
  * The overrides assume the caller has already applied the Gold direction flip
  * to baseScore values (so for Gold, a CPI beat shows up as -1 here, and
@@ -45,17 +77,15 @@ const US_JOBS_CODES = new Set([
  */
 export function computeCompassOverridesForAsset(
   assetCode: string,
-  regime: Regime,
+  gate: OverrideGateContext,
   indicatorScores: IndicatorScoreInput[],
 ): OverrideAdjustment {
-  if (regime !== 'Risk-Off') {
-    return { totalAdjustment: 0, overridesFired: [] };
-  }
-
   const overridesFired: OverrideEntry[] = [];
   let totalAdjustment = 0;
 
-  if (assetCode === 'XAUUSD') {
+  // Override 2 (Gold): regime path Risk-Off AND fed constraint permits (8B).
+  // No shock bypass exists for Override 2.
+  if (assetCode === 'XAUUSD' && gate.override2Active) {
     const affected: string[] = [];
     let adj = 0;
     for (const ind of indicatorScores) {
@@ -77,7 +107,8 @@ export function computeCompassOverridesForAsset(
     }
   }
 
-  if (assetCode === 'JPY') {
+  // Override 3 (JPY Safe Haven): gated by 8A (rate gate / Trigger B bypass).
+  if (assetCode === 'JPY' && gate.override3And5Active) {
     overridesFired.push({
       code: 'OVERRIDE_3_JPY_SAFE_HAVEN',
       adjustment: 1,
@@ -86,7 +117,8 @@ export function computeCompassOverridesForAsset(
     totalAdjustment += 1;
   }
 
-  if (assetCode === 'USD') {
+  // Override 4 (USD Weak Jobs): UNGATED — fires on the regime path only.
+  if (assetCode === 'USD' && gate.regimePathRiskOff) {
     const affected: string[] = [];
     let adj = 0;
     for (const ind of indicatorScores) {
@@ -105,7 +137,8 @@ export function computeCompassOverridesForAsset(
     }
   }
 
-  if (assetCode === 'SPY' || assetCode === 'NAS100') {
+  // Override 1 (Bad-News-Good-News): UNGATED — fires on the regime path only.
+  if ((assetCode === 'SPY' || assetCode === 'NAS100') && gate.regimePathRiskOff) {
     const affected: string[] = [];
     let adj = 0;
     for (const ind of indicatorScores) {

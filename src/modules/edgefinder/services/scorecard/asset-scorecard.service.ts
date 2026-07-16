@@ -15,8 +15,10 @@ import {
   computeCompassOverridesForAsset,
   type IndicatorScoreInput,
   type OverrideEntry,
+  type OverrideGateContext,
   type Regime,
 } from './compass-overrides';
+import { isRegimePathRiskOff } from '@modules/edgefinder/services/compass/compass-override-gates';
 
 export interface AssembleScorecardResult {
   scorecardId: string;
@@ -100,7 +102,10 @@ function buildCompassOverridesJson(
   overridesFired: OverrideEntry[],
   totalAdjustment: number,
 ): Prisma.InputJsonValue | null {
-  if (regime !== 'Risk-Off' || overridesFired.length === 0) return null;
+  // Phase 6: gate on whether any override actually fired, not on the regime
+  // string — a Trigger B carry shock can fire Override 3 even when
+  // final_regime is not Risk-Off.
+  if (overridesFired.length === 0) return null;
   return {
     regime,
     overridesFired: overridesFired.map((o) => ({
@@ -198,14 +203,42 @@ export async function assembleAssetScorecard(
   );
   const cotScore = cotScoredList.reduce((sum, s) => sum + (s.score ?? 0), 0);
 
-  const regimeSnapshot = await compassClassificationsRepository.getRegimeAsOf(
+  const gateSnapshot = await compassClassificationsRepository.getRegimeGateAsOf(
     observationDate,
   );
+
+  // Phase 6: the override activation path keys off final_regime + the
+  // persisted gate decisions, not the bare standard active regime. `regime`
+  // (used for regimeAtCompute / the overrides JSON) is the FINAL regime, so a
+  // Trigger-A-forced Risk-Off is reflected truthfully.
   let regime: Regime;
-  if (regimeSnapshot) {
-    regime = regimeSnapshot.activeRegime;
+  let gate: OverrideGateContext;
+  if (gateSnapshot) {
+    regime = gateSnapshot.finalRegime;
+    const regimePathRiskOff = isRegimePathRiskOff({
+      finalRegime: gateSnapshot.finalRegime,
+      standardActiveRegime: gateSnapshot.activeRegime,
+      shockAActive: gateSnapshot.shockAActive,
+    });
+    gate = {
+      regimePathRiskOff,
+      // Override 2 (gold) active iff regime path Risk-Off AND NOT suppressed by
+      // the fed-constraint gate (persisted by the classifier).
+      override2Active: regimePathRiskOff && !gateSnapshot.override2SuppressedByConstraint,
+      // Overrides 3 & 5 active iff (regime path Risk-Off AND NOT suppressed by
+      // the rate gate) OR a Trigger B carry-shock bypass.
+      override3And5Active:
+        (regimePathRiskOff && !gateSnapshot.override3SuppressedByGate) || gateSnapshot.shockBActive,
+      shockBActive: gateSnapshot.shockBActive,
+    };
   } else {
     regime = 'Caution';
+    gate = {
+      regimePathRiskOff: false,
+      override2Active: false,
+      override3And5Active: false,
+      shockBActive: false,
+    };
     logger.warn(
       {
         assetCode,
@@ -223,7 +256,7 @@ export async function assembleAssetScorecard(
       category: s.indicator.category,
     }));
 
-  const overrides = computeCompassOverridesForAsset(assetCode, regime, overrideInput);
+  const overrides = computeCompassOverridesForAsset(assetCode, gate, overrideInput);
   const compassAdjustment = overrides.totalAdjustment;
 
   const fundamentalsScore = baseFundamentalsScore + compassAdjustment;

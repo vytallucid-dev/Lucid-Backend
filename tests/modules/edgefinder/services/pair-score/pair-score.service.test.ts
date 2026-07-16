@@ -26,7 +26,7 @@ vi.mock('@core/repositories/edgefinder-pair-scores.repository', () => ({
 
 vi.mock('@core/repositories/compass-classifications.repository', () => ({
   compassClassificationsRepository: {
-    getRegimeAsOf: vi.fn(),
+    getRegimeGateAsOf: vi.fn(),
   },
 }));
 
@@ -38,9 +38,31 @@ import { assemblePairScore } from '@modules/edgefinder/services/pair-score/pair-
 const mockedScore = scoreIndicator as unknown as ReturnType<typeof vi.fn>;
 const mockedUpsert = edgefinderPairScoresRepository.upsert as unknown as ReturnType<typeof vi.fn>;
 const mockedRegime =
-  compassClassificationsRepository.getRegimeAsOf as unknown as ReturnType<typeof vi.fn>;
+  compassClassificationsRepository.getRegimeGateAsOf as unknown as ReturnType<typeof vi.fn>;
 
 const DATE = new Date(Date.UTC(2026, 4, 19));
+
+/**
+ * Phase 6 gate snapshot from a plain regime — finalRegime == regime, no
+ * shocks, 8A rate gate PERMITS Override 5 (not hawkish). So a Risk-Off regime
+ * fires Override 5 exactly as pre-Phase-6, letting these tests assert the
+ * unchanged −1 carry-unwind adjustment. Gate-specific behaviour is covered in
+ * pair-compass-overrides.test.ts and compass-override-gates.test.ts.
+ */
+function gateSnapshot(regime: 'Risk-On' | 'Caution' | 'Risk-Off') {
+  return {
+    classificationDate: DATE,
+    activeRegime: regime,
+    finalRegime: regime,
+    shockAActive: false,
+    shockBActive: false,
+    rateGateHawkish: false,
+    override3SuppressedByGate: false,
+    override5SuppressedByGate: false,
+    fedConstraint: 'CONSTRAINED',
+    override2SuppressedByConstraint: false,
+  };
+}
 
 // Mirrors the 15 active rows seeded into pair_template_rows (PPI is BILATERAL — no EUR inversion).
 const MOCK_TEMPLATE_ROWS = [
@@ -118,12 +140,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   cotRows.length = 0;
   mockedUpsert.mockResolvedValue({ pairScoreId: 'ps-1', action: 'inserted' });
-  mockedRegime.mockResolvedValue({
-    classificationDate: DATE,
-    activeRegime: 'Caution',
-    candidateRegime: 'Caution',
-    persistenceDaysCount: 0,
-  });
+  mockedRegime.mockResolvedValue(gateSnapshot('Caution'));
   prismaMock.asset.findUnique.mockImplementation(
     async ({ where }: { where: { code: string } }) => ASSETS[where.code] ?? null,
   );
@@ -249,12 +266,7 @@ describe('assemblePairScore — pair COT scoring', () => {
 describe('assemblePairScore — Compass Override 5', () => {
   it('Risk-Off + EURJPY → -1 compass adjustment applied to total', async () => {
     setupScoreMap({});
-    mockedRegime.mockResolvedValue({
-      classificationDate: DATE,
-      activeRegime: 'Risk-Off',
-      candidateRegime: 'Risk-Off',
-      persistenceDaysCount: 1,
-    });
+    mockedRegime.mockResolvedValue(gateSnapshot('Risk-Off'));
     const r = await assemblePairScore('EURJPY', DATE);
     expect(r.compassAdjustment).toBe(-1);
     expect(r.totalScore).toBe(r.baseTotal - 1);
@@ -263,36 +275,21 @@ describe('assemblePairScore — Compass Override 5', () => {
 
   it('Risk-Off + GBPJPY → -1 compass adjustment', async () => {
     setupScoreMap({});
-    mockedRegime.mockResolvedValue({
-      classificationDate: DATE,
-      activeRegime: 'Risk-Off',
-      candidateRegime: 'Risk-Off',
-      persistenceDaysCount: 1,
-    });
+    mockedRegime.mockResolvedValue(gateSnapshot('Risk-Off'));
     const r = await assemblePairScore('GBPJPY', DATE);
     expect(r.compassAdjustment).toBe(-1);
   });
 
   it('Risk-Off + USDJPY → no adjustment (override 5 excludes USDJPY)', async () => {
     setupScoreMap({});
-    mockedRegime.mockResolvedValue({
-      classificationDate: DATE,
-      activeRegime: 'Risk-Off',
-      candidateRegime: 'Risk-Off',
-      persistenceDaysCount: 1,
-    });
+    mockedRegime.mockResolvedValue(gateSnapshot('Risk-Off'));
     const r = await assemblePairScore('USDJPY', DATE);
     expect(r.compassAdjustment).toBe(0);
   });
 
   it('Risk-Off + EURUSD → no adjustment (no JPY in pair)', async () => {
     setupScoreMap({});
-    mockedRegime.mockResolvedValue({
-      classificationDate: DATE,
-      activeRegime: 'Risk-Off',
-      candidateRegime: 'Risk-Off',
-      persistenceDaysCount: 1,
-    });
+    mockedRegime.mockResolvedValue(gateSnapshot('Risk-Off'));
     const r = await assemblePairScore('EURUSD', DATE);
     expect(r.compassAdjustment).toBe(0);
   });

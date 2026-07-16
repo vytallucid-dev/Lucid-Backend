@@ -1,0 +1,11 @@
+-- Compass v2 Phase 6 (Addendum 8B): adds the Fed constraint to the existing
+-- effective-dated per-currency cycle-stance table.
+--
+-- fed_constraint is a single global, effective-dated judgment value about the
+-- Fed ('FREE' | 'CONSTRAINED'), stored ADDITIVELY on this table's USD rows and
+-- resolved with the same greatest-effective_date-<=t convention as `stance`.
+-- Nullable: a null/absent value reads as 'FREE' (the fail-safe default, so the
+-- gold Override 2 behaves classically). Non-USD rows leave it null.
+--
+-- Purely additive — no existing column altered.
+ALTER TABLE "currency_cycle_stance" ADD COLUMN     "fed_constraint" VARCHAR(12);

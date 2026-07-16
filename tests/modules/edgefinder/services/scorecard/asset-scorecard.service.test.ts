@@ -13,7 +13,7 @@ vi.mock('@core/repositories/edgefinder-scorecards.repository', () => ({
 
 vi.mock('@core/repositories/compass-classifications.repository', () => ({
   compassClassificationsRepository: {
-    getRegimeAsOf: vi.fn(),
+    getRegimeGateAsOf: vi.fn(),
     getMostRecentBefore: vi.fn(),
   },
 }));
@@ -35,11 +35,46 @@ const mockedScore = scoreIndicator as unknown as ReturnType<typeof vi.fn>;
 const mockedUpsert =
   edgefinderScorecardsRepository.upsert as unknown as ReturnType<typeof vi.fn>;
 const mockedRegime =
-  compassClassificationsRepository.getRegimeAsOf as unknown as ReturnType<typeof vi.fn>;
+  compassClassificationsRepository.getRegimeGateAsOf as unknown as ReturnType<typeof vi.fn>;
 const mockedResolver =
   resolveAssetIndicators as unknown as ReturnType<typeof vi.fn>;
 
 const DATE = new Date(Date.UTC(2026, 4, 19));
+
+/**
+ * Build a Phase 6 gate snapshot from a plain regime. Models the standard
+ * (pre-Phase-6) behaviour: finalRegime == the regime, no shocks, both gates
+ * PERMIT (rate gate not hawkish, fed CONSTRAINED) — so a Risk-Off regime
+ * fires Overrides 2/3/5 exactly as before, letting these base-assembly tests
+ * assert unchanged adjustments. Gate-specific behaviour is tested in
+ * compass-override-gates.test.ts and compass-overrides.test.ts.
+ */
+function gateSnapshot(
+  regime: 'Risk-On' | 'Caution' | 'Risk-Off',
+  opts: Partial<{
+    shockAActive: boolean;
+    shockBActive: boolean;
+    rateGateHawkish: boolean;
+    override3SuppressedByGate: boolean;
+    override5SuppressedByGate: boolean;
+    fedConstraint: string;
+    override2SuppressedByConstraint: boolean;
+    finalRegime: 'Risk-On' | 'Caution' | 'Risk-Off';
+  }> = {},
+) {
+  return {
+    classificationDate: DATE,
+    activeRegime: regime,
+    finalRegime: opts.finalRegime ?? regime,
+    shockAActive: opts.shockAActive ?? false,
+    shockBActive: opts.shockBActive ?? false,
+    rateGateHawkish: opts.rateGateHawkish ?? false,
+    override3SuppressedByGate: opts.override3SuppressedByGate ?? false,
+    override5SuppressedByGate: opts.override5SuppressedByGate ?? false,
+    fedConstraint: opts.fedConstraint ?? 'CONSTRAINED',
+    override2SuppressedByConstraint: opts.override2SuppressedByConstraint ?? false,
+  };
+}
 
 type ResolvedIndicatorMock = {
   indicatorId: string;
@@ -93,12 +128,7 @@ function setupScoreMap(
 beforeEach(() => {
   vi.clearAllMocks();
   mockedUpsert.mockResolvedValue({ scorecardId: 'sc-1', action: 'inserted' });
-  mockedRegime.mockResolvedValue({
-    classificationDate: DATE,
-    activeRegime: 'Caution',
-    candidateRegime: 'Caution',
-    persistenceDaysCount: 0,
-  });
+  mockedRegime.mockResolvedValue(gateSnapshot('Caution'));
 });
 
 describe('mapScoreToLabel', () => {
@@ -128,12 +158,7 @@ describe('assembleAssetScorecard — base assembly', () => {
         ind('USD_COT', 'COT', { isCot: true }),
       ],
     });
-    mockedRegime.mockResolvedValue({
-      classificationDate: DATE,
-      activeRegime: 'Risk-On',
-      candidateRegime: 'Risk-On',
-      persistenceDaysCount: 0,
-    });
+    mockedRegime.mockResolvedValue(gateSnapshot('Risk-On'));
     setupScoreMap({ US_GDP_QOQ: 1, US_NFP: -1, USD_COT: 1 });
 
     const r = await assembleAssetScorecard('USD', DATE);
@@ -162,12 +187,7 @@ describe('assembleAssetScorecard — base assembly', () => {
 
 describe('assembleAssetScorecard — overrides in Risk-Off', () => {
   beforeEach(() => {
-    mockedRegime.mockResolvedValue({
-      classificationDate: DATE,
-      activeRegime: 'Risk-Off',
-      candidateRegime: 'Risk-Off',
-      persistenceDaysCount: 0,
-    });
+    mockedRegime.mockResolvedValue(gateSnapshot('Risk-Off'));
   });
 
   it('USD weak-jobs override fires: +1 per jobs miss', async () => {
@@ -248,12 +268,7 @@ describe('assembleAssetScorecard — overrides in Risk-Off', () => {
         ind('XAUUSD_COT', 'COT', { isCot: true }),
       ],
     });
-    mockedRegime.mockResolvedValue({
-      classificationDate: DATE,
-      activeRegime: 'Caution',
-      candidateRegime: 'Caution',
-      persistenceDaysCount: 0,
-    });
+    mockedRegime.mockResolvedValue(gateSnapshot('Caution'));
     setupScoreMap({ US_GDP_QOQ: 1, US_JOBLESS_CLAIMS: 1, XAUUSD_COT: 0 });
 
     const r = await assembleAssetScorecard('XAUUSD', DATE);
@@ -390,12 +405,7 @@ describe('assembleAssetScorecard — edge cases', () => {
       assetId: 'asset-jpy',
       indicators: [ind('JP_GDP_QOQ'), ind('JPY_COT', 'COT', { isCot: true })],
     });
-    mockedRegime.mockResolvedValue({
-      classificationDate: DATE,
-      activeRegime: 'Risk-Off',
-      candidateRegime: 'Risk-Off',
-      persistenceDaysCount: 0,
-    });
+    mockedRegime.mockResolvedValue(gateSnapshot('Risk-Off'));
     setupScoreMap({ JP_GDP_QOQ: 0, JPY_COT: 0 });
 
     await assembleAssetScorecard('JPY', DATE);

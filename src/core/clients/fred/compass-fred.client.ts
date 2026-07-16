@@ -7,6 +7,12 @@ const COMPASS_FRED_SERIES = {
   GDP: 'GDP',
   NFP: 'PAYEMS',
   UNRATE: 'UNRATE',
+  // Phase 6 (Addendum 8A): raw 2-year Treasury daily yield. Compass-local
+  // plumbing for the rate gate — NOT a voting input. The EdgeFinder
+  // US_02Y_SMA indicator stores only the already-computed 21d SMA in
+  // data_points, discarding the raw daily close; the rate gate needs the raw
+  // close AND its own 21-obs SMA, so Compass fetches DGS2 itself.
+  US_02Y: 'DGS2',
 } as const;
 
 export type CompassFredSeriesId =

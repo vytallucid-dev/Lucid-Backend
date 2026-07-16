@@ -20,6 +20,7 @@ vi.mock('@core/repositories/compass-inputs.repository', () => ({
 import { compassFredClient } from '@core/clients/fred/compass-fred.client';
 import { compassInputsRepository } from '@core/repositories/compass-inputs.repository';
 import { ingestUsDataStackInput } from '@modules/edgefinder/services/compass/inputs/us-data-stack-input.service';
+import { COMPASS_CONFIG_V1_FIXTURE as cfg } from '../compass-config.fixture';
 
 const mockedFetch = compassFredClient.fetchSeries as unknown as ReturnType<typeof vi.fn>;
 const mockedUpsert = compassInputsRepository.upsert as unknown as ReturnType<typeof vi.fn>;
@@ -82,7 +83,7 @@ describe('ingestUsDataStackInput', () => {
 
     setupFetch({ cpi, gdp, payems, unrate });
 
-    await ingestUsDataStackInput(new Date(Date.UTC(2026, 4, 18)));
+    await ingestUsDataStackInput(new Date(Date.UTC(2026, 4, 18)), cfg);
     const call = mockedUpsert.mock.calls[0][0];
     expect(call.inputCode).toBe('US_DATA_STACK');
     expect(call.colorBand).toBe('GREEN');
@@ -107,7 +108,7 @@ describe('ingestUsDataStackInput', () => {
 
     setupFetch({ cpi, gdp, payems, unrate });
 
-    await ingestUsDataStackInput(new Date(Date.UTC(2026, 4, 18)));
+    await ingestUsDataStackInput(new Date(Date.UTC(2026, 4, 18)), cfg);
     const call = mockedUpsert.mock.calls[0][0];
     const sub = call.subChecks as {
       jobs: { band: string; sahm: { triggered: boolean } | null };
@@ -132,7 +133,7 @@ describe('ingestUsDataStackInput', () => {
 
     setupFetch({ cpi, gdp, payems, unrate });
 
-    await ingestUsDataStackInput(new Date(Date.UTC(2026, 4, 18)));
+    await ingestUsDataStackInput(new Date(Date.UTC(2026, 4, 18)), cfg);
     expect(mockedUpsert.mock.calls[0][0].colorBand).toBe('RED');
   });
 });

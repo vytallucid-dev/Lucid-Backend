@@ -447,6 +447,13 @@ model CurrencyCycleStance {
   stance        String    @db.VarChar(10)
   effectiveFrom DateTime  @map("effective_from") @db.Date
   effectiveTo   DateTime? @map("effective_to") @db.Date
+  // Phase 6 (Addendum 8B): Fed constraint for the gold override gate. A single
+  // global, effective-dated judgment value about the Fed — stored ADDITIVELY
+  // on this table's USD rows (Fed ↔ USD), resolved with the same
+  // greatest-effective_date-<=t convention as `stance`. Nullable; a null/absent
+  // value reads as 'FREE' (the fail-safe default, so Override 2 behaves
+  // classically). Values: 'FREE' | 'CONSTRAINED'. Non-USD rows leave it null.
+  fedConstraint String?   @map("fed_constraint") @db.VarChar(12)
   notes         String?
   createdAt     DateTime  @default(now()) @map("created_at")
   createdBy     String?   @map("created_by")
@@ -501,7 +508,40 @@ model CompassClassification {
   candidateRegime      String  @map("candidate_regime") @db.VarChar(15)
   activeRegime         String  @map("active_regime") @db.VarChar(15)
   persistenceDaysCount Int     @default(0) @map("persistence_days_count")
+  // crisisOverrideFired: retired by Phase 4's Shock Layer (Trigger A now
+  // serves the same same-day Risk-Off bypass). Column KEPT as historical
+  // record — always false going forward, never dropped.
   crisisOverrideFired  Boolean @default(false) @map("crisis_override_fired")
+
+  // Phase 4 Shock Layer: finalRegime = Risk-Off when shockAActive, else
+  // activeRegime unchanged. shockBActive is exposed but does not yet affect
+  // finalRegime or overrides (Phase 6 wires its override effect).
+  finalRegime  String  @default("") @map("final_regime") @db.VarChar(15)
+  shockAActive Boolean @default(false) @map("shock_a_active")
+  shockBActive Boolean @default(false) @map("shock_b_active")
+
+  // Phase 6 audit columns — the daily record of what the two override gates
+  // (Addenda 8A rate gate / 8B fed constraint) decided.
+  //   us02yClose / us02ySma21 = the rate-gate inputs (raw DGS2 close and its
+  //     21-obs SMA) as of the date. Null on pre-Phase-6 rows / when the gate
+  //     couldn't compute (failed open).
+  //   rateGateHawkish = us02yClose > us02ySma21 (strict, 6-dp rounded).
+  //   override3/5SuppressedByGate = the JPY safe-haven/carry overrides were
+  //     suppressed because the rate gate was hawkish and no Trigger B bypass.
+  //   fedConstraint = the resolved Fed constraint ('FREE'|'CONSTRAINED') as of
+  //     the date, from currency_cycle_stance (Addendum 8B). '' on pre-Phase-6.
+  //   override2SuppressedByConstraint = the gold override was suppressed
+  //     because fedConstraint was FREE under a Risk-Off regime path.
+  //   overridesActive = the POST-gate final override set that actually fired
+  //     (JSON array of override codes) — self-explaining daily log.
+  us02yClose                     Decimal? @map("us02y_close") @db.Decimal(20, 6)
+  us02ySma21                     Decimal? @map("us02y_sma21") @db.Decimal(20, 6)
+  rateGateHawkish                Boolean  @default(false) @map("rate_gate_hawkish")
+  override3SuppressedByGate      Boolean  @default(false) @map("override_3_suppressed_by_gate")
+  override5SuppressedByGate      Boolean  @default(false) @map("override_5_suppressed_by_gate")
+  fedConstraint                  String   @default("") @map("fed_constraint") @db.VarChar(12)
+  override2SuppressedByConstraint Boolean @default(false) @map("override_2_suppressed_by_constraint")
+  overridesActive                Json?    @map("overrides_active")
 
   totalGreenWeight  Decimal @map("total_green_weight") @db.Decimal(5, 2)
   totalYellowWeight Decimal @map("total_yellow_weight") @db.Decimal(5, 2)
@@ -527,6 +567,65 @@ model CompassValidationReport {
 
   @@index([generatedAt(sort: Desc)])
   @@map("compass_validation_reports")
+}
+
+model CompassConfig {
+  id             String    @id @default(uuid())
+  versionLabel   String    @map("version_label") @db.VarChar(20)
+  configDefinition Json    @map("config_definition")
+  effectiveFrom  DateTime  @map("effective_from") @db.Date
+  effectiveTo    DateTime? @map("effective_to") @db.Date
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  createdBy      String?   @map("created_by")
+
+  @@unique([versionLabel])
+  @@index([effectiveFrom])
+  @@map("compass_config")
+}
+
+/**
+ * Cache of the most-recently-scanned T10Y2Y inversion episode, keyed by
+ * isValidation so live and backfill/validation runs don't collide (mirrors
+ * compass_inputs / compass_classifications). This table is NOT the source of
+ * truth — it can be wiped and fully recomputed by re-scanning T10Y2Y history
+ * (see compass-curve-state-machine.ts + compass-curve-state.repository.ts).
+ * One current row per isValidation space; `computedForDate` records which
+ * observation date the cached scan was last refreshed for.
+ */
+model CompassCurveState {
+  id                String   @id @default(uuid())
+  isValidation      Boolean  @default(false) @map("is_validation")
+  computedForDate   DateTime @map("computed_for_date") @db.Date
+  inversionStart    DateTime? @map("inversion_start") @db.Date
+  unInversionDate   DateTime? @map("un_inversion_date") @db.Date
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([isValidation])
+  @@map("compass_curve_state")
+}
+
+/**
+ * Cache of the Shock Layer's two trigger states (Phase 4), keyed by
+ * isValidation, mirroring compass_curve_state's pattern exactly. This table
+ * is NOT the source of truth — it can be wiped and fully recomputed by
+ * re-scanning VIX/OAS/USDJPY history (see compass-shock-layer.ts +
+ * compass-shock-state.repository.ts). One current row per isValidation
+ * space. Each trigger's `*Expiry` is the trading-day it stops being active
+ * (inclusive); a fresh same-trigger firing RESETS (not stacks) the expiry.
+ */
+model CompassShockState {
+  id              String    @id @default(uuid())
+  isValidation    Boolean   @default(false) @map("is_validation")
+  computedForDate DateTime  @map("computed_for_date") @db.Date
+  shockAActive    Boolean   @default(false) @map("shock_a_active")
+  shockAExpiry    DateTime? @map("shock_a_expiry") @db.Date
+  shockBActive    Boolean   @default(false) @map("shock_b_active")
+  shockBExpiry    DateTime? @map("shock_b_expiry") @db.Date
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([isValidation])
+  @@map("compass_shock_state")
 }
 
 // =========================================================

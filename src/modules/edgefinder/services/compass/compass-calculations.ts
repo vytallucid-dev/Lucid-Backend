@@ -15,51 +15,20 @@ export function compute50DaySMA(closes: number[]): number | null {
   return last50.reduce((sum, v) => sum + v, 0) / 50;
 }
 
-export function computePctDistance(current: number, sma: number): number {
-  if (sma === 0) return 0;
-  return ((current - sma) / sma) * 100;
-}
-
-export function compute5DayPctChange(closes: number[]): number | null {
-  if (closes.length < 6) return null;
-  const last = closes[closes.length - 1];
-  const fiveDaysAgo = closes[closes.length - 6];
-  if (fiveDaysAgo === 0) return 0;
-  return ((last - fiveDaysAgo) / fiveDaysAgo) * 100;
-}
-
 export function compute30DayChange(values: number[]): number | null {
   if (values.length < 31) return null;
   return values[values.length - 1] - values[values.length - 31];
 }
 
-export function computePearsonCorrelation(
-  x: number[],
-  y: number[],
-): number | null {
-  if (x.length !== y.length || x.length < 2) return null;
-  const n = x.length;
-  let sumX = 0;
-  let sumY = 0;
-  for (let i = 0; i < n; i++) {
-    sumX += x[i];
-    sumY += y[i];
-  }
-  const meanX = sumX / n;
-  const meanY = sumY / n;
-  let cov = 0;
-  let varX = 0;
-  let varY = 0;
-  for (let i = 0; i < n; i++) {
-    const dx = x[i] - meanX;
-    const dy = y[i] - meanY;
-    cov += dx * dy;
-    varX += dx * dx;
-    varY += dy * dy;
-  }
-  const denom = Math.sqrt(varX * varY);
-  if (denom === 0) return null;
-  return cov / denom;
+/**
+ * Change between the latest observation and the one N observations back
+ * (array-index lookback — same convention as compute30DayChange). No
+ * forward-fill or skip-date handling; a gap in the underlying series shifts
+ * which calendar date "N observations back" lands on.
+ */
+export function computeObsChange(values: number[], n: number): number | null {
+  if (values.length < n + 1) return null;
+  return values[values.length - 1] - values[values.length - 1 - n];
 }
 
 export function computeYoYSequence(monthlyLevels: number[]): (number | null)[] {

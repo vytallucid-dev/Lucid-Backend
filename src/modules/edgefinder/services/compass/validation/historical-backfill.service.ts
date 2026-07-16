@@ -1,12 +1,16 @@
 import { logger } from '@core/utils/logger';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
+import { compassConfigRepository } from '@core/repositories/compass-config.repository';
 import { ingestVixInput } from '../inputs/vix-input.service';
 import { ingestHyOasInput } from '../inputs/hy-oas-input.service';
 import { ingestYieldCurveInput } from '../inputs/yield-curve-input.service';
 import { ingestDxyTrendInput } from '../inputs/dxy-trend-input.service';
-import { ingestGoldDxyCorrInput } from '../inputs/gold-dxy-corr-input.service';
+import { ingestVixTermStructureInput } from '../inputs/vix-term-structure-input.service';
 import { ingestUsDataStackInput } from '../inputs/us-data-stack-input.service';
+import { ingestUsdJpyPriceInput } from '../inputs/usdjpy-price-input.service';
+import { ingestUs02yCloseInput } from '../inputs/us02y-close-input.service';
 import { runCompassClassifier } from '../compass-classifier.service';
+import type { CompassConfigDefinition } from '../compass-config.types';
 
 const JOB_NAME = 'compass_validation_backfill';
 
@@ -37,16 +41,33 @@ export interface BackfillResult {
   durationMs: number;
 }
 
-type IngestFn = (observationDate: Date, isValidation?: boolean) => Promise<void>;
+type IngestFn = (
+  observationDate: Date,
+  config: CompassConfigDefinition,
+  isValidation?: boolean,
+) => Promise<void>;
 
-const INPUT_FNS: Array<{ code: string; fn: IngestFn }> = [
+// US_DATA_STACK runs in its own phase BEFORE the rest: the curve input
+// (Phase 2B) reads US_DATA_STACK's persisted Jobs sub-check for the same
+// observation date, so its compass_inputs row must already exist before
+// YIELD_2S10S runs. The remaining 4 independent inputs still run in
+// parallel with each other.
+const US_DATA_STACK_FN: { code: string; fn: IngestFn } = {
+  code: 'US_DATA_STACK',
+  fn: ingestUsDataStackInput,
+};
+
+const REMAINING_INPUT_FNS: Array<{ code: string; fn: IngestFn }> = [
   { code: 'VIX_5D_AVG', fn: ingestVixInput },
   { code: 'HY_OAS', fn: ingestHyOasInput },
-  { code: 'YIELD_2S10S', fn: ingestYieldCurveInput },
   { code: 'DXY_TREND', fn: ingestDxyTrendInput },
-  { code: 'GOLD_DXY_CORR', fn: ingestGoldDxyCorrInput },
-  { code: 'US_DATA_STACK', fn: ingestUsDataStackInput },
+  { code: 'VIX_TERM_STRUCTURE', fn: ingestVixTermStructureInput },
+  { code: 'YIELD_2S10S', fn: ingestYieldCurveInput },
+  { code: 'USDJPY_PRICE', fn: (date, _config, isValidation) => ingestUsdJpyPriceInput(date, isValidation) },
+  { code: 'US02Y_CLOSE', fn: (date, _config, isValidation) => ingestUs02yCloseInput(date, isValidation) },
 ];
+
+const INPUT_FNS: Array<{ code: string; fn: IngestFn }> = [US_DATA_STACK_FN, ...REMAINING_INPUT_FNS];
 
 /**
  * Generate trading days (Mon-Fri) between start and end inclusive, ascending.
@@ -111,9 +132,16 @@ export async function backfillWindow(
       await sleep(INTER_DAY_DELAY_MS);
     }
 
-    const inputResults = await Promise.allSettled(
-      INPUT_FNS.map((d) => d.fn(day, true)),
+    const dayConfig = await compassConfigRepository.resolveForDate(day);
+
+    // US_DATA_STACK must settle before the rest run, since YIELD_2S10S reads
+    // its persisted Jobs sub-check for the same day (see INPUT_FNS comment
+    // above). The remaining 4 inputs are still independent of each other.
+    const usDataStackResult = await Promise.allSettled([US_DATA_STACK_FN.fn(day, dayConfig, true)]);
+    const remainingResults = await Promise.allSettled(
+      REMAINING_INPUT_FNS.map((d) => d.fn(day, dayConfig, true)),
     );
+    const inputResults = [...usDataStackResult, ...remainingResults];
 
     const failed = inputResults
       .map((r, i) => ({ result: r, code: INPUT_FNS[i].code }))

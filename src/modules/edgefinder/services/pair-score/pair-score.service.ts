@@ -13,6 +13,7 @@ import {
 } from '@core/repositories/edgefinder-pair-scores.repository';
 import type { Regime } from '@modules/edgefinder/services/scorecard/compass-overrides';
 import { mapScoreToLabel } from '@modules/edgefinder/services/scorecard/asset-scorecard.service';
+import { isRegimePathRiskOff } from '@modules/edgefinder/services/compass/compass-override-gates';
 import {
   loadPairTemplateFromDb,
   getPairDefinition,
@@ -391,25 +392,52 @@ export async function assemblePairScore(
 
   const baseTotal = basePairScore + pairCotScore;
 
-  const regimeSnapshot = await compassClassificationsRepository.getRegimeAsOf(scoreDate);
+  const gateSnapshot = await compassClassificationsRepository.getRegimeGateAsOf(scoreDate);
+
+  // Phase 6: regime path + gate decisions (persisted by the classifier) drive
+  // the pair overrides. `regime` (regimeAtCompute) is the FINAL regime.
   let regime: Regime;
-  if (regimeSnapshot) {
-    regime = regimeSnapshot.activeRegime;
+  let regimePathRiskOff: boolean;
+  let override5Active: boolean;
+  let shockBActive: boolean;
+  if (gateSnapshot) {
+    regime = gateSnapshot.finalRegime;
+    regimePathRiskOff = isRegimePathRiskOff({
+      finalRegime: gateSnapshot.finalRegime,
+      standardActiveRegime: gateSnapshot.activeRegime,
+      shockAActive: gateSnapshot.shockAActive,
+    });
+    shockBActive = gateSnapshot.shockBActive;
+    // Override 5 (carry unwind) gated by the SAME 8A rate gate as Override 3.
+    override5Active =
+      (regimePathRiskOff && !gateSnapshot.override5SuppressedByGate) || shockBActive;
   } else {
     regime = 'Caution';
+    regimePathRiskOff = false;
+    override5Active = false;
+    shockBActive = false;
     logger.warn(
       { pairCode, scoreDate: scoreDate.toISOString().slice(0, 10) },
       'No Compass classification on or before date — defaulting regime to Caution',
     );
   }
 
-  // Fix 2: Inject JPY Safe Haven boost from asset scorecard into pair overrides.
+  // Inject JPY Safe Haven boost from the JPY asset scorecard. That scorecard
+  // only emits the boost when the 8A gate permitted Override 3 (or Trigger B
+  // bypass), so the boost is already gate-suppressed to 0 when appropriate —
+  // fetched whenever the activation path is live and the quote is JPY.
   const jpySafeHavenBoost =
-    regime === 'Risk-Off' && pairDef.quote === 'JPY'
+    (regimePathRiskOff || shockBActive) && pairDef.quote === 'JPY'
       ? await fetchJpySafeHavenBoost(scoreDate)
       : 0;
 
-  const overrides = computePairCompassOverrides({ pairCode, regime, jpySafeHavenBoost });
+  const overrides = computePairCompassOverrides({
+    pairCode,
+    regimePathRiskOff,
+    override5Active,
+    shockBActive,
+    jpySafeHavenBoost,
+  });
   const compassAdjustment = overrides.totalAdjustment;
   const totalScore = baseTotal + compassAdjustment;
   const ratingLabel = mapScoreToLabel(totalScore);

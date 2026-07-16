@@ -18,8 +18,16 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "prisma:seed": "tsx prisma/seed.ts",
     "db:seed:edgefinder": "tsx prisma/seed-edgefinder.ts",
+    "db:seed:compass-config": "tsx prisma/seed-compass-config.ts",
     "cutover:dxy": "tsx scripts/cutover-dxy-to-eodhd.ts",
-    "update:indicator-labels": "tsx scripts/update-indicator-labels.ts"
+    "update:indicator-labels": "tsx scripts/update-indicator-labels.ts",
+    "verify:compass-config": "tsx scripts/verify-compass-config-migration.ts",
+    "verify:compass-phase2a": "tsx scripts/verify-compass-phase2a.ts",
+    "verify:compass-phase2b": "tsx scripts/verify-compass-phase2b.ts",
+    "verify:compass-phase3": "tsx scripts/verify-compass-phase3.ts",
+    "verify:compass-phase4": "tsx scripts/verify-compass-phase4.ts",
+    "verify:compass-phase5": "tsx scripts/verify-compass-phase5.ts",
+    "verify:compass-phase6": "tsx scripts/verify-compass-phase6.ts"
   },
   "engines": {
     "node": ">=22.0.0"

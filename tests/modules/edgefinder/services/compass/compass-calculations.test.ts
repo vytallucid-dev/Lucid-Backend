@@ -2,10 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   compute5DayAverage,
   compute50DaySMA,
-  computePctDistance,
-  compute5DayPctChange,
   compute30DayChange,
-  computePearsonCorrelation,
+  computeObsChange,
   computeYoYSequence,
   computeQoQSequence,
   detectTrajectory,
@@ -36,28 +34,6 @@ describe('compute50DaySMA', () => {
   });
 });
 
-describe('computePctDistance', () => {
-  it('returns positive when current is above SMA', () => {
-    expect(computePctDistance(105, 100)).toBeCloseTo(5, 6);
-  });
-  it('returns negative when current is below SMA', () => {
-    expect(computePctDistance(95, 100)).toBeCloseTo(-5, 6);
-  });
-  it('returns 0 when SMA is 0 (guard)', () => {
-    expect(computePctDistance(100, 0)).toBe(0);
-  });
-});
-
-describe('compute5DayPctChange', () => {
-  it('returns null when fewer than 6 values', () => {
-    expect(compute5DayPctChange([1, 2, 3, 4, 5])).toBeNull();
-  });
-  it('computes pct change between last and 5-back', () => {
-    // [100, x, x, x, x, 103] → 3% change
-    expect(compute5DayPctChange([100, 1, 1, 1, 1, 103])).toBeCloseTo(3, 6);
-  });
-});
-
 describe('compute30DayChange', () => {
   it('returns null when fewer than 31 values', () => {
     expect(compute30DayChange(new Array(30).fill(1))).toBeNull();
@@ -69,23 +45,18 @@ describe('compute30DayChange', () => {
   });
 });
 
-describe('computePearsonCorrelation', () => {
-  it('returns 1 for perfect positive correlation', () => {
-    expect(computePearsonCorrelation([1, 2, 3, 4], [2, 4, 6, 8])).toBeCloseTo(1, 6);
+describe('computeObsChange', () => {
+  it('returns null when fewer than n+1 values', () => {
+    expect(computeObsChange(new Array(10).fill(1), 10)).toBeNull();
   });
-  it('returns -1 for perfect negative correlation', () => {
-    expect(computePearsonCorrelation([1, 2, 3, 4], [8, 6, 4, 2])).toBeCloseTo(-1, 6);
+  it('returns last minus the value n observations back', () => {
+    const arr = [4.0, ...new Array(9).fill(4.0), 4.8];
+    // 11 values; last=4.8, 10-back (index 0)=4.0 → delta 0.8
+    expect(computeObsChange(arr, 10)).toBeCloseTo(0.8, 10);
   });
-  it('returns null when arrays differ in length', () => {
-    expect(computePearsonCorrelation([1, 2, 3], [1, 2])).toBeNull();
-  });
-  it('returns null when one series has zero variance', () => {
-    expect(computePearsonCorrelation([1, 2, 3], [5, 5, 5])).toBeNull();
-  });
-  it('handles realistic uncorrelated data near zero', () => {
-    const corr = computePearsonCorrelation([1, 2, 3, 4], [3, 1, 4, 2]);
-    expect(corr).not.toBeNull();
-    expect(Math.abs(corr as number)).toBeLessThan(0.5);
+  it('works for a 5-observation lookback', () => {
+    const arr = [100, 101, 102, 103, 104, 105];
+    expect(computeObsChange(arr, 5)).toBe(5);
   });
 });
 

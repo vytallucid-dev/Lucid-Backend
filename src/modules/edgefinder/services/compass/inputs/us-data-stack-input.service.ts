@@ -15,6 +15,7 @@ import {
   aggregateUsDataStack,
   type ColorBand,
 } from '../compass-bands';
+import type { CompassConfigDefinition } from '../compass-config.types';
 import { addDays } from './_input-helpers';
 
 const INPUT_CODE = 'US_DATA_STACK';
@@ -25,6 +26,7 @@ const UNRATE_DAYS = 450;
 
 export async function ingestUsDataStackInput(
   observationDate: Date,
+  config: CompassConfigDefinition,
   isValidation: boolean = false,
 ): Promise<void> {
   // Sequential (not Promise.all) to keep concurrent FRED requests low — the
@@ -80,16 +82,17 @@ export async function ingestUsDataStackInput(
   const qoq = computeQoQSequence(gdpLevels).filter(
     (v): v is number => v !== null,
   );
-  const gdpBand: ColorBand = evaluateGdpLevel(qoq);
+  const gdpBand: ColorBand = evaluateGdpLevel(qoq, config);
 
   const sahm = computeSahmRule(unrateLevels);
   const nfpDeltas = computeRecentNFPChanges(payemsLevels);
   const jobsBand: ColorBand = evaluateJobs(
     sahm?.triggered ?? false,
     nfpDeltas,
+    config,
   );
 
-  const overall = aggregateUsDataStack(cpiBand, gdpBand, jobsBand);
+  const overall = aggregateUsDataStack(cpiBand, gdpBand, jobsBand, config);
 
   await compassInputsRepository.upsert({
     observationDate,
