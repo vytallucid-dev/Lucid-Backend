@@ -1,11 +1,9 @@
 import { logger } from '@core/utils/logger';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import { assemblePairScore } from './pair-score.service';
-import { PAIR_DEFINITIONS } from './pair-template.config';
+import { loadPairDefinitions } from './pair-template.config';
 
 const JOB_NAME = 'edgefinder_pair_score_assembly';
-
-const PAIR_CODES: ReadonlyArray<string> = PAIR_DEFINITIONS.map((p) => p.code);
 
 export interface RunPairScoreOrchestratorResult {
   logId: string;
@@ -41,7 +39,14 @@ export async function runPairScoreOrchestrator(
   const pairsSucceeded: string[] = [];
   const pairsFailed: Array<{ pairCode: string; error: string }> = [];
 
-  for (const pairCode of PAIR_CODES) {
+  // Phase 2: the pair universe comes from the asset registry, not a hardcoded list.
+  const pairCodes = (await loadPairDefinitions()).map((p) => p.code);
+  logger.info(
+    { jobName: JOB_NAME, scoreDate: dateLabel, pairCodes },
+    'EdgeFinder pair universe resolved from registry',
+  );
+
+  for (const pairCode of pairCodes) {
     try {
       await assemblePairScore(pairCode, scoreDate);
       pairsSucceeded.push(pairCode);

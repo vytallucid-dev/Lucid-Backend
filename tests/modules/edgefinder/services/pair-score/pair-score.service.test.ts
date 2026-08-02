@@ -2,7 +2,9 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 
 const { prismaMock } = vi.hoisted(() => ({
   prismaMock: {
-    asset: { findUnique: vi.fn() },
+    // Phase 2: loadPairDefinitions() derives the pair universe from the
+    // registry, so asset.findMany is now part of the pair-scoring path.
+    asset: { findUnique: vi.fn(), findMany: vi.fn() },
     cotData: { findFirst: vi.fn() },
     pairTemplateRow: { findMany: vi.fn() },
     edgefinderScorecard: { findFirst: vi.fn() },
@@ -65,22 +67,39 @@ function gateSnapshot(regime: 'Risk-On' | 'Caution' | 'Risk-Off') {
 }
 
 // Mirrors the 15 active rows seeded into pair_template_rows (PPI is BILATERAL — no EUR inversion).
+// Mirrors the seeded pair_template_rows + pair_template_row_currencies (Phase 2:
+// currency is a ROW, not one of four columns). PPI is BILATERAL — no EUR inversion.
 const MOCK_TEMPLATE_ROWS = [
-  { displayName: 'GDP', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 1, isActive: true, usIndicatorCode: 'US_GDP_QOQ', eurIndicatorCode: 'EU_GDP_QOQ', gbpIndicatorCode: 'UK_GDP_MOM', jpyIndicatorCode: 'JP_GDP_QOQ' },
-  { displayName: 'Manufacturing PMI', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 2, isActive: true, usIndicatorCode: 'US_ISM_MFG', eurIndicatorCode: 'EU_MFG_PMI', gbpIndicatorCode: 'UK_MFG_PMI', jpyIndicatorCode: 'JP_MFG_PMI' },
-  { displayName: 'Services PMI', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 3, isActive: true, usIndicatorCode: 'US_ISM_SVC', eurIndicatorCode: 'EU_SVC_PMI', gbpIndicatorCode: 'UK_SVC_PMI', jpyIndicatorCode: 'JP_SVC_PMI' },
-  { displayName: 'Retail Sales', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 4, isActive: true, usIndicatorCode: 'US_RETAIL_MOM', eurIndicatorCode: 'EU_RETAIL_MOM', gbpIndicatorCode: 'UK_RETAIL_MOM', jpyIndicatorCode: 'JP_RETAIL_YOY' },
-  { displayName: 'Consumer Confidence', uiGroup: 'Sentiment', treatment: 'BILATERAL', rowOrder: 5, isActive: true, usIndicatorCode: 'US_CB_CONSCONF', eurIndicatorCode: 'EU_CCI', gbpIndicatorCode: 'UK_GFK', jpyIndicatorCode: 'JP_CONSCONF' },
-  { displayName: 'CPI', uiGroup: 'Inflation', treatment: 'BILATERAL', rowOrder: 6, isActive: true, usIndicatorCode: 'US_CPI_YOY', eurIndicatorCode: 'EU_CPI_YOY', gbpIndicatorCode: 'UK_CPI_YOY', jpyIndicatorCode: 'JP_CPI_YOY' },
-  { displayName: 'PPI', uiGroup: 'Inflation', treatment: 'BILATERAL', rowOrder: 7, isActive: true, usIndicatorCode: 'US_PPI_MOM', eurIndicatorCode: 'EU_PPI_MOM', gbpIndicatorCode: 'UK_PPI_MOM', jpyIndicatorCode: 'JP_PPI_YOY' },
-  { displayName: 'PCE', uiGroup: 'Inflation', treatment: 'USD_ONLY', rowOrder: 8, isActive: true, usIndicatorCode: 'US_PCE_YOY', eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: null },
-  { displayName: 'Household Spending', uiGroup: 'Inflation', treatment: 'JPY_ONLY', rowOrder: 9, isActive: true, usIndicatorCode: null, eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: 'JP_HSHLD_SPEND' },
-  { displayName: 'NFP / Employment', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 10, isActive: true, usIndicatorCode: 'US_NFP', eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: null },
-  { displayName: 'Unemployment', uiGroup: 'Jobs', treatment: 'BILATERAL', rowOrder: 11, isActive: true, usIndicatorCode: 'US_UNEMP', eurIndicatorCode: 'EU_UNEMP', gbpIndicatorCode: 'UK_UNEMP', jpyIndicatorCode: 'JP_UNEMP' },
-  { displayName: 'Jobless Claims', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 12, isActive: true, usIndicatorCode: 'US_JOBLESS_CLAIMS', eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: null },
-  { displayName: 'JOLTS', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 13, isActive: true, usIndicatorCode: 'US_JOLTS', eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: null },
-  { displayName: 'ADP', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 14, isActive: true, usIndicatorCode: 'US_ADP', eurIndicatorCode: null, gbpIndicatorCode: null, jpyIndicatorCode: null },
-  { displayName: 'Interest Rate', uiGroup: 'Rates', treatment: 'RATES_BILATERAL', rowOrder: 15, isActive: true, usIndicatorCode: 'US_FED_RATE', eurIndicatorCode: 'EU_ECB_RATE', gbpIndicatorCode: 'UK_BOE_RATE', jpyIndicatorCode: 'JP_BOJ_RATE' },
+  { displayName: 'GDP', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 1, isActive: true,
+    currencies: [{ currencyCode: 'EUR', indicatorCode: 'EU_GDP_QOQ' }, { currencyCode: 'GBP', indicatorCode: 'UK_GDP_MOM' }, { currencyCode: 'JPY', indicatorCode: 'JP_GDP_QOQ' }, { currencyCode: 'USD', indicatorCode: 'US_GDP_QOQ' }] },
+  { displayName: 'Manufacturing PMI', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 2, isActive: true,
+    currencies: [{ currencyCode: 'EUR', indicatorCode: 'EU_MFG_PMI' }, { currencyCode: 'GBP', indicatorCode: 'UK_MFG_PMI' }, { currencyCode: 'JPY', indicatorCode: 'JP_MFG_PMI' }, { currencyCode: 'USD', indicatorCode: 'US_ISM_MFG' }] },
+  { displayName: 'Services PMI', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 3, isActive: true,
+    currencies: [{ currencyCode: 'EUR', indicatorCode: 'EU_SVC_PMI' }, { currencyCode: 'GBP', indicatorCode: 'UK_SVC_PMI' }, { currencyCode: 'JPY', indicatorCode: 'JP_SVC_PMI' }, { currencyCode: 'USD', indicatorCode: 'US_ISM_SVC' }] },
+  { displayName: 'Retail Sales', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 4, isActive: true,
+    currencies: [{ currencyCode: 'EUR', indicatorCode: 'EU_RETAIL_MOM' }, { currencyCode: 'GBP', indicatorCode: 'UK_RETAIL_MOM' }, { currencyCode: 'JPY', indicatorCode: 'JP_RETAIL_YOY' }, { currencyCode: 'USD', indicatorCode: 'US_RETAIL_MOM' }] },
+  { displayName: 'Consumer Confidence', uiGroup: 'Sentiment', treatment: 'BILATERAL', rowOrder: 5, isActive: true,
+    currencies: [{ currencyCode: 'EUR', indicatorCode: 'EU_CCI' }, { currencyCode: 'GBP', indicatorCode: 'UK_GFK' }, { currencyCode: 'JPY', indicatorCode: 'JP_CONSCONF' }, { currencyCode: 'USD', indicatorCode: 'US_CB_CONSCONF' }] },
+  { displayName: 'CPI', uiGroup: 'Inflation', treatment: 'BILATERAL', rowOrder: 6, isActive: true,
+    currencies: [{ currencyCode: 'EUR', indicatorCode: 'EU_CPI_YOY' }, { currencyCode: 'GBP', indicatorCode: 'UK_CPI_YOY' }, { currencyCode: 'JPY', indicatorCode: 'JP_CPI_YOY' }, { currencyCode: 'USD', indicatorCode: 'US_CPI_YOY' }] },
+  { displayName: 'PPI', uiGroup: 'Inflation', treatment: 'BILATERAL', rowOrder: 7, isActive: true,
+    currencies: [{ currencyCode: 'EUR', indicatorCode: 'EU_PPI_MOM' }, { currencyCode: 'GBP', indicatorCode: 'UK_PPI_MOM' }, { currencyCode: 'JPY', indicatorCode: 'JP_PPI_YOY' }, { currencyCode: 'USD', indicatorCode: 'US_PPI_MOM' }] },
+  { displayName: 'PCE', uiGroup: 'Inflation', treatment: 'USD_ONLY', rowOrder: 8, isActive: true,
+    currencies: [{ currencyCode: 'USD', indicatorCode: 'US_PCE_YOY' }] },
+  { displayName: 'Household Spending', uiGroup: 'Inflation', treatment: 'JPY_ONLY', rowOrder: 9, isActive: true,
+    currencies: [{ currencyCode: 'JPY', indicatorCode: 'JP_HSHLD_SPEND' }] },
+  { displayName: 'NFP / Employment', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 10, isActive: true,
+    currencies: [{ currencyCode: 'USD', indicatorCode: 'US_NFP' }] },
+  { displayName: 'Unemployment', uiGroup: 'Jobs', treatment: 'BILATERAL', rowOrder: 11, isActive: true,
+    currencies: [{ currencyCode: 'EUR', indicatorCode: 'EU_UNEMP' }, { currencyCode: 'GBP', indicatorCode: 'UK_UNEMP' }, { currencyCode: 'JPY', indicatorCode: 'JP_UNEMP' }, { currencyCode: 'USD', indicatorCode: 'US_UNEMP' }] },
+  { displayName: 'Jobless Claims', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 12, isActive: true,
+    currencies: [{ currencyCode: 'USD', indicatorCode: 'US_JOBLESS_CLAIMS' }] },
+  { displayName: 'JOLTS', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 13, isActive: true,
+    currencies: [{ currencyCode: 'USD', indicatorCode: 'US_JOLTS' }] },
+  { displayName: 'ADP', uiGroup: 'Jobs', treatment: 'USD_ONLY', rowOrder: 14, isActive: true,
+    currencies: [{ currencyCode: 'USD', indicatorCode: 'US_ADP' }] },
+  { displayName: 'Interest Rate', uiGroup: 'Rates', treatment: 'RATES_BILATERAL', rowOrder: 15, isActive: true,
+    currencies: [{ currencyCode: 'EUR', indicatorCode: 'EU_ECB_RATE' }, { currencyCode: 'GBP', indicatorCode: 'UK_BOE_RATE' }, { currencyCode: 'JPY', indicatorCode: 'JP_BOJ_RATE' }, { currencyCode: 'USD', indicatorCode: 'US_FED_RATE' }] },
 ];
 
 function scored(score: number, direction: string | null = null) {
@@ -155,6 +174,15 @@ beforeEach(() => {
     },
   );
   prismaMock.pairTemplateRow.findMany.mockResolvedValue(MOCK_TEMPLATE_ROWS);
+  // Phase 5: isCarryPair mirrors the real registry (EUR/GBPJPY true, USDJPY
+  // false — see pair-template.config.ts's PairDefinition.isCarryPair).
+  prismaMock.asset.findMany.mockResolvedValue([
+    { code: 'EURUSD', metadata: { base: 'EUR', quote: 'USD' } },
+    { code: 'GBPUSD', metadata: { base: 'GBP', quote: 'USD' } },
+    { code: 'USDJPY', metadata: { base: 'USD', quote: 'JPY' } },
+    { code: 'EURJPY', metadata: { base: 'EUR', quote: 'JPY', isCarryPair: true } },
+    { code: 'GBPJPY', metadata: { base: 'GBP', quote: 'JPY', isCarryPair: true } },
+  ]);
   prismaMock.edgefinderScorecard.findFirst.mockResolvedValue(null);
   setupScoreMap({});
 });

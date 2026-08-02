@@ -11,6 +11,20 @@ vi.mock('@modules/edgefinder/services/scorecard/asset-scorecard.service', () => 
   assembleAssetScorecard: vi.fn(),
 }));
 
+// Phase 2: the asset universe is derived from the registry (active +
+// EdgeFinder-scoped + has >=1 asset_indicator_map row), so the orchestrator now
+// queries prisma. Mocked here to keep the test hermetic and to assert that the
+// registry result — not a hardcoded list — is what drives the run.
+const registryAssets: Array<{ code: string }> = [];
+
+vi.mock('@core/db/prisma', () => ({
+  prisma: {
+    asset: {
+      findMany: vi.fn(async () => registryAssets),
+    },
+  },
+}));
+
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import { assembleAssetScorecard } from '@modules/edgefinder/services/scorecard/asset-scorecard.service';
 import { runScorecardOrchestrator } from '@modules/edgefinder/services/scorecard/scorecard-orchestrator.service';
@@ -23,6 +37,14 @@ const DATE = new Date(Date.UTC(2026, 4, 19));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  registryAssets.length = 0;
+  registryAssets.push(
+    { code: 'EUR' },
+    { code: 'GBP' },
+    { code: 'JPY' },
+    { code: 'USD' },
+    { code: 'XAUUSD' },
+  );
   mockedStart.mockResolvedValue({ id: 'log-1' });
   mockedComplete.mockResolvedValue(undefined);
   mockedAssemble.mockResolvedValue({
@@ -34,7 +56,7 @@ beforeEach(() => {
 });
 
 describe('runScorecardOrchestrator', () => {
-  it('runs all 5 assets and returns success when all succeed', async () => {
+  it('runs every asset the registry returns and succeeds when all succeed', async () => {
     const r = await runScorecardOrchestrator('manual', null, DATE);
     expect(r.status).toBe('success');
     expect(r.assetsSucceeded.sort()).toEqual(['EUR', 'GBP', 'JPY', 'USD', 'XAUUSD']);
@@ -42,6 +64,13 @@ describe('runScorecardOrchestrator', () => {
     expect(mockedAssemble).toHaveBeenCalledTimes(5);
     expect(mockedComplete).toHaveBeenCalledTimes(1);
     expect(mockedComplete.mock.calls[0][0].status).toBe('success');
+  });
+
+  it('picks up a newly registered asset with no code change', async () => {
+    registryAssets.push({ code: 'AUD' });
+    const r = await runScorecardOrchestrator('manual', null, DATE);
+    expect(r.assetsSucceeded).toContain('AUD');
+    expect(mockedAssemble).toHaveBeenCalledTimes(6);
   });
 
   it('returns partial when some assets fail', async () => {

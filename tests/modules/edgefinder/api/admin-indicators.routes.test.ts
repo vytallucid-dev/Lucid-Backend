@@ -29,6 +29,10 @@ vi.mock('@core/db/prisma', () => ({
   prisma: {
     indicator: { findMany: vi.fn(), findUnique: vi.fn() },
     dataPoint: { findMany: vi.fn() },
+    // Phase 6: primaryAsset derivation reads asset_indicator_map.
+    assetIndicatorMap: { findMany: vi.fn() },
+    asset: { findMany: vi.fn() },
+    cotData: { findMany: vi.fn() },
   },
 }));
 
@@ -50,9 +54,13 @@ function makeApp() {
 const app = makeApp();
 const mockedIndicator = prisma.indicator as unknown as Record<string, ReturnType<typeof vi.fn>>;
 const mockedDataPoint = prisma.dataPoint as unknown as Record<string, ReturnType<typeof vi.fn>>;
+const mockedAssetMap = prisma.assetIndicatorMap as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no currency owner found, so primaryAsset resolves to null unless
+  // a test explicitly sets up ownership.
+  mockedAssetMap.findMany.mockResolvedValue([]);
 });
 
 function makeIndicatorRecord(overrides: Partial<Record<string, unknown>> = {}) {
@@ -115,6 +123,27 @@ describe('GET /api/admin/indicators/list', () => {
 ;
 
     expect(res.body.data[0].latestDataPoint).toBeNull();
+  });
+
+  // Phase 6: primaryAsset is derived from asset_indicator_map, not the raw
+  // `country` field — proves the exact China-PMI scenario (country='CN' but
+  // owned by AUD) resolves correctly, and that an indicator with no map row
+  // resolves to null rather than throwing.
+  it('derives primaryAsset from asset_indicator_map, not from country', async () => {
+    mockedIndicator.findMany.mockResolvedValue([
+      makeIndicatorRecord({ id: 'ind-cn-caixin', code: 'CN_CAIXIN_PMI_MFG', country: 'CN' }),
+      makeIndicatorRecord({ id: 'ind-no-owner', code: 'SOME_NIFTY_LIKE_CODE', country: null }),
+    ]);
+    mockedAssetMap.findMany.mockResolvedValue([
+      { indicatorId: 'ind-cn-caixin', asset: { code: 'AUD' } },
+    ]);
+
+    const res = await request(app).get('/api/admin/indicators/list');
+
+    expect(res.status).toBe(200);
+    const byCode = Object.fromEntries(res.body.data.map((d: { code: string; primaryAsset: string | null }) => [d.code, d.primaryAsset]));
+    expect(byCode.CN_CAIXIN_PMI_MFG).toBe('AUD');
+    expect(byCode.SOME_NIFTY_LIKE_CODE).toBeNull();
   });
 
   it('filters by country query param', async () => {

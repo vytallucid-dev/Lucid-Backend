@@ -56,6 +56,31 @@ adminIndicatorsRouter.get('/list', async (req: Request, res: Response, next: Nex
       },
     });
 
+    // ── Phase 6: primary asset, derived from asset_indicator_map rather than the
+    // raw `country` field — the same class of fix Phase 2 made for the scoring
+    // engine (COUNTRY_BY_ASSET → asset_indicator_map). An indicator's country
+    // field does not necessarily match which asset it belongs to (China PMI has
+    // country='CN' but belongs to AUD), so grouping the admin UI by country
+    // reintroduces exactly the bug that fix eliminated elsewhere. Every
+    // EdgeFinder indicator currently maps to at most one CURRENCY-class asset
+    // (verified: shared indicators like US_CPI_YOY also map to commodity/index
+    // assets, but never to a second currency), so `primaryAsset` is unambiguous.
+    const primaryAssetByIndicatorId = new Map<string, string>();
+    if (tool === 'edgefinder' && indicators.length > 0) {
+      const ownerMaps = await prisma.assetIndicatorMap.findMany({
+        where: {
+          indicatorId: { in: indicators.map((i) => i.id) },
+          asset: { assetClass: 'currency' },
+        },
+        select: { indicatorId: true, asset: { select: { code: true } } },
+      });
+      for (const m of ownerMaps) {
+        if (!primaryAssetByIndicatorId.has(m.indicatorId)) {
+          primaryAssetByIndicatorId.set(m.indicatorId, m.asset.code);
+        }
+      }
+    }
+
     // ── COT freshness: for cftc indicators, data lives in cot_data not data_points.
     // Build a map of indicator.code → latest cot_data row so those indicators
     // don't always show "Never Fetched" in the card list.
@@ -105,6 +130,10 @@ adminIndicatorsRouter.get('/list', async (req: Request, res: Response, next: Nex
         code: ind.code,
         name: ind.name,
         country: ind.country,
+        // Phase 6: the asset (currency) this indicator belongs to, via
+        // asset_indicator_map — null for indicators with no currency owner
+        // (e.g. NIFTY indicators, where this map is never populated).
+        primaryAsset: primaryAssetByIndicatorId.get(ind.id) ?? null,
         uiGroup: ind.uiGroup,
         compositeGroup: ind.compositeGroup,
         displayOrder: ind.displayOrder,

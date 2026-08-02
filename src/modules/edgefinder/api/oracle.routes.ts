@@ -51,14 +51,16 @@ import {
   uiGroupToHeatmapCategory,
   SECTION_COLORS,
   dbFrequencyToHeatmapFrequency,
-  ORACLE_ASSETS,
-  FX_PAIR_META,
-  SCORECARD_KEY_TO_ASSET_CODE,
-  SCORECARD_ASSET_META,
-  COT_ASSETS,
-  COT_ASSET_FLAG,
 } from './oracle-mappers';
 import { getCompassSnapshot } from '@modules/edgefinder/services/compass/compass-public.service';
+import {
+  getInstrumentRegistry,
+  requireScorecardAsset,
+  requirePair,
+  requireScoreSubject,
+  requireCotAsset,
+} from './instrument-registry';
+import { buildDataHealth, EMPTY_DATA_HEALTH } from './data-health';
 
 export const oracleRouter = Router();
 
@@ -166,16 +168,21 @@ function toCotLabel(label: string | null): 'Bullish' | 'Bearish' | 'Neutral' {
 
 oracleRouter.get('/assets', async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const allCodes = ORACLE_ASSETS.map((a) => a.dbCode);
+    // Phase 3: the screener universe comes from the registry. Inactive assets
+    // (SPY/NAS100/US30) and unmapped ones (DXY) are excluded by construction.
+    const registry = await getInstrumentRegistry();
+    const screener = registry.screener;
+
+    const allCodes = screener.map((a) => a.code);
     const assetRecords = await prisma.asset.findMany({ where: { code: { in: allCodes } } });
     const assetByCode = new Map(assetRecords.map((a) => [a.code, a]));
 
-    const fxCodes = ['EURUSD', 'GBPUSD', 'USDJPY', 'EURJPY', 'GBPJPY'];
-    const fxPairIds = fxCodes
-      .map((c) => assetByCode.get(c)?.id)
+    const fxPairIds = screener
+      .filter((a) => a.type === 'Forex')
+      .map((a) => assetByCode.get(a.code)?.id)
       .filter((id): id is string => id !== undefined);
 
-    const [pairScoreRows, xauScorecardResult] = await Promise.all([
+    const [pairScoreRows, scorecardRows] = await Promise.all([
       prisma.edgefinderPairScore.findMany({
         where: { pairId: { in: fxPairIds }, isCurrent: true },
         orderBy: { scoreDate: 'desc' },
@@ -188,89 +195,129 @@ oracleRouter.get('/assets', async (_req: Request, res: Response, next: NextFunct
         },
       }),
       (async () => {
-        const xauAsset = assetByCode.get('XAUUSD');
-        if (!xauAsset) return null;
-        return prisma.edgefinderScorecard.findFirst({
-          where: { assetId: xauAsset.id, isCurrent: true },
+        const nonPairIds = screener
+          .filter((a) => a.type !== 'Forex')
+          .map((a) => assetByCode.get(a.code)?.id)
+          .filter((id): id is string => id !== undefined);
+        if (nonPairIds.length === 0) return [];
+        return prisma.edgefinderScorecard.findMany({
+          where: { assetId: { in: nonPairIds }, isCurrent: true },
           orderBy: { observationDate: 'desc' },
-          select: { totalScore: true, cotScore: true, indicatorBreakdown: true, observationDate: true },
+          select: {
+            assetId: true, totalScore: true, cotScore: true,
+            indicatorBreakdown: true, observationDate: true,
+          },
         });
       })(),
     ]);
+    const latestScorecard = new Map<string, (typeof scorecardRows)[0]>();
+    for (const sc of scorecardRows) {
+      if (!latestScorecard.has(sc.assetId)) latestScorecard.set(sc.assetId, sc);
+    }
 
     // Global "last updated" = the most recent underlying score date across all
-    // assets shown in the table (FX pair scoreDates + Gold scorecard date).
-    let lastUpdatedDate: Date | null = xauScorecardResult?.observationDate ?? null;
+    // assets shown in the table (FX pair scoreDates + scorecard dates).
+    let lastUpdatedDate: Date | null = null;
+    for (const sc of scorecardRows) {
+      if (!lastUpdatedDate || sc.observationDate > lastUpdatedDate) lastUpdatedDate = sc.observationDate;
+    }
     for (const ps of pairScoreRows) {
       if (!lastUpdatedDate || ps.scoreDate > lastUpdatedDate) lastUpdatedDate = ps.scoreDate;
     }
     const lastUpdated = lastUpdatedDate ? lastUpdatedDate.toISOString() : null;
+
+    const asOf = lastUpdatedDate ?? new Date();
 
     const latestPairScore = new Map<string, (typeof pairScoreRows)[0]>();
     for (const ps of pairScoreRows) {
       if (!latestPairScore.has(ps.pairId)) latestPairScore.set(ps.pairId, ps);
     }
 
-    const built = ORACLE_ASSETS.map((meta): Omit<AssetData, 'lastUpdated'> => {
-      const asset = assetByCode.get(meta.dbCode);
-      const base = {
-        asset: meta.code,
-        type: meta.type,
-        flag: meta.flag,
-      };
+    const built = await Promise.all(
+      screener.map(async (meta): Promise<Omit<AssetData, 'lastUpdated'>> => {
+        const asset = assetByCode.get(meta.code);
+        const base = { asset: meta.code, type: meta.type, flag: meta.flag };
+        const empty = {
+          ...base, score: null, bias: null, cot: null, ...EMPTY_INDICATOR_SLOTS,
+          inapplicableSlots: [] as string[], dataHealth: { ...EMPTY_DATA_HEALTH },
+        };
 
-      if (meta.type === 'Forex' && asset) {
-        const ps = latestPairScore.get(asset.id);
-        if (!ps) {
+        if (meta.type === 'Forex' && asset) {
+          const ps = latestPairScore.get(asset.id);
+          if (!ps) {
+            return {
+              ...empty,
+              outcome: 'insufficient_data' as const,
+              reason: 'No pair score computed yet for this FX pair',
+            };
+          }
+          const rows = parseArray<RowBreakdownEntry>(ps.rowBreakdown);
+          const slots = { ...EMPTY_INDICATOR_SLOTS };
+          const inapplicableSlots: string[] = [];
+          const codes: string[] = [];
+          const insufficient: string[] = [];
+
+          for (const row of rows) {
+            const slotKey = PAIR_ROW_TO_SLOT[row.rowName];
+            for (const side of [row.indicatorA, row.indicatorB]) {
+              if (!side.code) continue;
+              codes.push(side.code);
+              if (side.outcome === 'insufficient_data') insufficient.push(side.code);
+            }
+            if (slotKey === undefined) continue;
+
+            // Three distinct nulls, kept distinct:
+            //   - hard-excluded  (rowIncluded=false)  -> row not in this pair
+            //   - both sides absent (soft "dead" row) -> row inapplicable here
+            //   - genuinely neutral                   -> 0
+            const bothAbsent =
+              row.indicatorA.outcome === 'absent' && row.indicatorB.outcome === 'absent';
+            if (!row.rowIncluded || bothAbsent) {
+              slots[slotKey] = null;
+              inapplicableSlots.push(slotKey);
+              continue;
+            }
+            slots[slotKey] = pairScoreToIndicatorValue(row.pairScore, row.rowIncluded);
+          }
+
           return {
-            ...base, score: null, bias: null, cot: null, ...EMPTY_INDICATOR_SLOTS,
-            outcome: 'insufficient_data' as const,
-            reason: 'No pair score computed yet for this FX pair',
+            ...base,
+            score: ps.totalScore,
+            bias: scoreToFrontendBias(ps.totalScore),
+            cot: clampCotValue(ps.pairCotScore),
+            ...slots,
+            inapplicableSlots: [...new Set(inapplicableSlots)].sort(),
+            dataHealth: await buildDataHealth(codes, insufficient, asOf),
+            outcome: 'scored' as const,
+            reason: null,
           };
         }
-        const rows = parseArray<RowBreakdownEntry>(ps.rowBreakdown);
-        const slots = { ...EMPTY_INDICATOR_SLOTS };
-        for (const row of rows) {
-          const slotKey = PAIR_ROW_TO_SLOT[row.rowName];
-          if (slotKey !== undefined) {
-            // When both sides are absent the indicator doesn't apply to this pair
-            // (e.g. PCE/NFP/ADP/JOLTS/Claims on EURJPY or GBPJPY). The scoring
-            // engine keeps rowIncluded=true with pairScore=0 for these, so we
-            // must check outcomes rather than rowIncluded to distinguish
-            // "both absent → null" from "genuinely neutral → 0".
-            const bothAbsent =
-              row.indicatorA.outcome === 'absent' &&
-              row.indicatorB.outcome === 'absent';
-            slots[slotKey] = bothAbsent
-              ? null
-              : pairScoreToIndicatorValue(row.pairScore, row.rowIncluded);
-          }
+
+        if (meta.type === 'Forex') {
+          return {
+            ...empty,
+            outcome: 'insufficient_data' as const,
+            reason: 'FX pair not found in database',
+          };
         }
-        return {
-          ...base,
-          score: ps.totalScore,
-          bias: scoreToFrontendBias(ps.totalScore),
-          cot: clampCotValue(ps.pairCotScore),
-          ...slots,
-          outcome: 'scored' as const,
-          reason: null,
-        };
-      }
 
-      // Forex asset not in DB (shouldn't occur in practice)
-      if (meta.type === 'Forex') {
-        return {
-          ...base, score: null, bias: null, cot: null, ...EMPTY_INDICATOR_SLOTS,
-          outcome: 'insufficient_data' as const,
-          reason: 'FX pair not found in database',
-        };
-      }
+        const sc = asset ? latestScorecard.get(asset.id) : undefined;
+        if (!sc) {
+          return {
+            ...empty,
+            outcome: 'insufficient_data' as const,
+            reason: `No scorecard computed for ${meta.name} yet`,
+          };
+        }
 
-      if (meta.code === 'XAUUSD' && xauScorecardResult) {
-        const entries = parseArray<IndicatorBreakdownEntry>(xauScorecardResult.indicatorBreakdown);
+        const entries = parseArray<IndicatorBreakdownEntry>(sc.indicatorBreakdown);
         const slots = { ...EMPTY_INDICATOR_SLOTS };
+        const codes: string[] = [];
+        const insufficient: string[] = [];
         for (const entry of entries) {
           if (entry.isCot) continue;
+          codes.push(entry.indicatorCode);
+          if (entry.outcome === 'insufficient_data') insufficient.push(entry.indicatorCode);
           const slotKey = INDICATOR_SLOT[entry.indicatorCode];
           if (slotKey !== undefined) {
             slots[slotKey] = scoreToIndicatorValue(entry.score, entry.outcome);
@@ -278,30 +325,17 @@ oracleRouter.get('/assets', async (_req: Request, res: Response, next: NextFunct
         }
         return {
           ...base,
-          score: xauScorecardResult.totalScore,
-          bias: scoreToFrontendBias(xauScorecardResult.totalScore),
-          cot: clampCotValue(xauScorecardResult.cotScore),
+          score: sc.totalScore,
+          bias: scoreToFrontendBias(sc.totalScore),
+          cot: clampCotValue(sc.cotScore),
           ...slots,
+          inapplicableSlots: [],
+          dataHealth: await buildDataHealth(codes, insufficient, asOf),
           outcome: 'scored' as const,
           reason: null,
         };
-      }
-
-      if (meta.code === 'XAUUSD') {
-        return {
-          ...base, score: null, bias: null, cot: null, ...EMPTY_INDICATOR_SLOTS,
-          outcome: 'insufficient_data' as const,
-          reason: 'No scorecard computed for Gold yet',
-        };
-      }
-
-      // SPY, NAS100 — deferred pending backtesting
-      return {
-        ...base, score: null, bias: null, cot: null, ...EMPTY_INDICATOR_SLOTS,
-        outcome: 'deferred' as const,
-        reason: 'Scoring deferred pending backtesting. Activation planned post-v1.',
-      };
-    });
+      }),
+    );
 
     const result: AssetData[] = built.map((row) => ({ ...row, lastUpdated }));
 
@@ -312,11 +346,40 @@ oracleRouter.get('/assets', async (_req: Request, res: Response, next: NextFunct
 });
 
 // ============================================================================
+// GET /api/oracle/scorecard-subjects
+// ============================================================================
+//
+// Issue 1 fix: the Asset Scorecard picker previously derived from
+// /api/oracle/assets (the screener projection — Forex pairs, Gold, indices;
+// it has NEVER contained standalone currencies) filtered to non-Forex, which
+// only ever left Gold and the indices once Phase 7 removed the picker's own
+// hardcoded currency list. The scorecard endpoint's actual valid-subject set
+// is registry.scorecardByKey (every asset with >= 1 asset_indicator_map row —
+// currencies + Gold — the same set requireScorecardAsset validates against
+// below). No endpoint exposed that set as a list before this; this is that
+// endpoint, so the frontend can derive the picker from it instead of holding
+// its own list.
+oracleRouter.get('/scorecard-subjects', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const registry = await getInstrumentRegistry();
+    const data = [...registry.scorecardByKey.values()]
+      .map((i) => ({ key: i.key, name: i.scorecardName, flag: i.scorecardFlag || i.flag, type: i.type }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================================================
 // GET /api/oracle/scorecard?asset=USD
 // ============================================================================
 
+// Phase 3: the asset param is validated against the registry at runtime rather
+// than a hardcoded enum, so a newly registered asset is accepted immediately and
+// an unknown one gets a 400 naming it.
 const scorecardQuerySchema = z.object({
-  asset: z.enum(['USD', 'EUR', 'GBP', 'JPY', 'Gold', 'SPY', 'NAS100']),
+  asset: z.string().min(1),
 });
 
 async function buildCotDetail(assetId: string, cotScoreFromScorecard: number): Promise<CotDetail> {
@@ -344,30 +407,12 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
     if (!parsed.success) {
       throw new AppError(400, 'Missing or invalid asset query param', 'VALIDATION_ERROR', parsed.error.flatten());
     }
-    const assetKey = parsed.data.asset as ScorecardAssetKey;
-    const dbCode = SCORECARD_KEY_TO_ASSET_CODE[assetKey];
-    const meta = SCORECARD_ASSET_META[assetKey];
-
-    // Deferred assets — short-circuit before any DB query
-    if (assetKey === 'SPY' || assetKey === 'NAS100') {
-      const deferred: ScorecardAsset = {
-        key: assetKey,
-        name: meta.name,
-        flag: meta.flag,
-        totalScore: null,
-        fundamentals: null,
-        cotScore: null,
-        bias: null,
-        cot: null,
-        sections: [],
-        scoreHistory: null,
-        outcome: 'deferred',
-        reason: 'Scoring deferred pending backtesting. Activation planned post-v1.',
-        lastUpdated: null,
-      };
-      res.json({ success: true, data: deferred });
-      return;
-    }
+    // Throws 400 naming the code when the asset is not a registered, active,
+    // mapped EdgeFinder asset. SPY/NAS100/US30 land here while isActive=false.
+    const instrument = await requireScorecardAsset(parsed.data.asset);
+    const assetKey = instrument.key as ScorecardAssetKey;
+    const dbCode = instrument.code;
+    const meta = { name: instrument.scorecardName, flag: instrument.scorecardFlag };
 
     const assetRecord = await prisma.asset.findFirst({ where: { code: dbCode } });
     if (!assetRecord) {
@@ -530,12 +575,18 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
 
 oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const allCodes = COT_ASSETS.map((a) => a.dbCode);
+    // Phase 3: derived from assets holding a cotContractCode. The filter is
+    // ACTIVE as well as has-a-code — SPY/NAS100/US30 gained contract codes in
+    // Phase 1 but are still isActive=false, so they are excluded here rather
+    // than surfacing as deferred rows.
+    const registry = await getInstrumentRegistry();
+    const cotInstruments = registry.cot;
+
+    const allCodes = cotInstruments.map((a) => a.code);
     const assetRecords = await prisma.asset.findMany({ where: { code: { in: allCodes } } });
     const assetByCode = new Map(assetRecords.map((a) => [a.code, a]));
-    // Only the non-deferred COT instruments carry cot_data / scorecard rows.
-    const dataAssetIds = COT_ASSETS.filter((m) => !m.deferred)
-      .map((m) => assetByCode.get(m.dbCode)?.id)
+    const dataAssetIds = cotInstruments
+      .map((m) => assetByCode.get(m.code)?.id)
       .filter((id): id is string => id !== undefined);
 
     const fourWeeksAgo = new Date();
@@ -602,36 +653,14 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
       if (!cotScoreByAssetId.has(sc.assetId)) cotScoreByAssetId.set(sc.assetId, sc.cotScore);
     }
 
-    const built = COT_ASSETS.map((meta): Omit<CotAsset, 'dataAsOf' | 'releasedOn'> => {
-      // Deferred instruments (SPY, NAS100) — no CFTC ingestion yet.
-      if (meta.deferred) {
-        return {
-          asset: meta.code,
-          flag: meta.flag,
-          type: meta.type,
-          longContracts: null,
-          shortContracts: null,
-          deltaLong: null,
-          deltaShort: null,
-          longPct: null,
-          shortPct: null,
-          netPctChange: null,
-          netPosition: null,
-          cotScore: null,
-          scoreTooltip: 'Scoring deferred pending backtesting',
-          trend: null,
-          outcome: 'deferred' as const,
-          reason: 'Scoring deferred pending backtesting. Activation planned post-v1.',
-        };
-      }
-
-      const asset = assetByCode.get(meta.dbCode);
+    const built = cotInstruments.map((meta): Omit<CotAsset, 'dataAsOf' | 'releasedOn'> => {
+      const asset = assetByCode.get(meta.code);
       const cot = asset ? latestCot.get(asset.id) : undefined;
 
       if (!asset || !cot) {
         return {
           asset: meta.code,
-          flag: meta.flag,
+          flag: meta.cotFlag,
           type: meta.type,
           longContracts: null,
           shortContracts: null,
@@ -664,7 +693,7 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
 
       return {
         asset: meta.code,
-        flag: meta.flag,
+        flag: meta.cotFlag,
         type: meta.type,
         longContracts,
         shortContracts,
@@ -694,23 +723,60 @@ oracleRouter.get('/cot', async (_req: Request, res: Response, next: NextFunction
 // GET /api/oracle/heatmap
 // ============================================================================
 
+// Issue 2 fix: currency asset code -> heatmap economy key. Membership (which
+// currencies exist) is still fully registry-derived below; this only decides
+// the display key for each one. GBP -> "UK" is the only non-trivial entry —
+// the rest just drop the trailing letter. A currency with no entry here
+// falls back to its own code, so a newly registered currency still gets a
+// group instead of being dropped.
+const HEATMAP_ECONOMY_KEY: Record<string, string> = { USD: 'US', EUR: 'EU', GBP: 'UK', JPY: 'JP', AUD: 'AU' };
+function heatmapEconomyKeyForAsset(assetCode: string): string {
+  return HEATMAP_ECONOMY_KEY[assetCode] ?? assetCode;
+}
+
 oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const countries = ['US', 'EU', 'UK', 'JP'];
-    const assetCodeByCountry: Record<string, string> = { US: 'USD', EU: 'EUR', UK: 'GBP', JP: 'JPY' };
+    // Issue 2: group by the asset an indicator belongs to (asset_indicator_map),
+    // not by the indicator's raw country field — the same fix Phase 6 applied
+    // to the admin panel and Phase 2 applied to the scoring layer. AUD owns
+    // both AU (ten Australian indicators) and CN (the RatingDog China PMI,
+    // scored to AUD as a demand proxy) — grouping by raw country produced a
+    // phantom "CN" economy holding just that one indicator; grouping by owning
+    // ASSET correctly folds both into a single AUD/"AU" economy. COT
+    // pseudo-rows are excluded via the is_cot flag.
+    const registry = await getInstrumentRegistry();
+    const currencyCodes = [...registry.scorecardByKey.values()]
+      .filter((i) => i.assetClass === 'currency')
+      .map((i) => i.code);
+
+    const mapRows = await prisma.assetIndicatorMap.findMany({
+      where: {
+        isCot: false,
+        asset: { code: { in: currencyCodes } },
+        indicator: { tool: 'edgefinder', isActive: true },
+      },
+      select: { asset: { select: { code: true } }, indicatorId: true },
+    });
+
+    const assetCodeByIndicatorId = new Map<string, string>();
+    for (const m of mapRows) {
+      if (!assetCodeByIndicatorId.has(m.indicatorId)) assetCodeByIndicatorId.set(m.indicatorId, m.asset.code);
+    }
+    const indicatorIds = [...assetCodeByIndicatorId.keys()];
+    const assetCodesInUse = [...new Set(assetCodeByIndicatorId.values())].sort();
+    const countries = assetCodesInUse.map(heatmapEconomyKeyForAsset);
 
     const [indicators, scorecardAssets] = await Promise.all([
       prisma.indicator.findMany({
-        where: { tool: 'edgefinder', isActive: true, country: { in: countries } },
-        orderBy: [{ country: 'asc' }, { uiGroup: 'asc' }, { code: 'asc' }],
+        where: { id: { in: indicatorIds } },
+        orderBy: [{ uiGroup: 'asc' }, { code: 'asc' }],
       }),
       prisma.asset.findMany({
-        where: { code: { in: ['USD', 'EUR', 'GBP', 'JPY'] } },
+        where: { code: { in: assetCodesInUse } },
         select: { id: true, code: true },
       }),
     ]);
 
-    const indicatorIds = indicators.map((i) => i.id);
     const assetByCode = new Map(scorecardAssets.map((a) => [a.code, a]));
     const scorecardAssetIds = scorecardAssets.map((a) => a.id);
 
@@ -745,8 +811,7 @@ oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunc
     }
 
     const indicatorScoreMap = new Map<string, { score: number | null; outcome: string; reason: string | null }>();
-    for (const country of countries) {
-      const assetCode = assetCodeByCountry[country];
+    for (const assetCode of assetCodesInUse) {
       const asset = assetByCode.get(assetCode);
       if (!asset) continue;
       const sc = latestScorecard.get(asset.id);
@@ -764,12 +829,25 @@ oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunc
     }
 
     const now = new Date();
-    const grouped: HeatmapResponse = { US: [], EU: [], UK: [], JP: [] };
+    // Seeded from the asset-derived economy-key list rather than a fixed
+    // four keys, so a newly onboarded currency gets its own group instead of
+    // pushing onto undefined.
+    const grouped: HeatmapResponse = {};
+    for (const c of countries) grouped[c] = [];
 
     for (const ind of indicators) {
-      const country = ind.country as 'US' | 'EU' | 'UK' | 'JP';
+      const ownerAssetCode = assetCodeByIndicatorId.get(ind.id);
+      if (!ownerAssetCode) continue; // not reached: indicatorIds is itself derived from this map
+      const economyKey = heatmapEconomyKeyForAsset(ownerAssetCode);
       const category = uiGroupToHeatmapCategory(ind.uiGroup);
       if (!category) continue;
+
+      // Issue 2: label the cross-country proxy clearly rather than hide the
+      // country distinction — the indicator's own name is untouched (still
+      // "RatingDog China Manufacturing PMI" per Phase 6's rename); only the
+      // heatmap row label gets the suffix, so it's obvious why a
+      // China-country indicator sits inside the AUD/"AU" economy.
+      const displayName = ind.country === 'CN' && ownerAssetCode !== 'CN' ? `${ind.name} (AUD proxy)` : ind.name;
 
       const dp = dpByIndicatorId.get(ind.id);
       const scoreEntry = indicatorScoreMap.get(ind.code);
@@ -812,8 +890,8 @@ oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunc
         ? (scoreEntry?.reason ?? 'No data ingested')
         : null;
 
-      grouped[country].push({
-        name: ind.name,
+      grouped[economyKey].push({
+        name: displayName,
         frequency: dbFrequencyToHeatmapFrequency(isEventDriven ? 'monthly' : freq),
         category,
         lastRelease,
@@ -842,7 +920,8 @@ oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunc
 // ============================================================================
 
 const fxScorecardQuerySchema = z.object({
-  pair: z.enum(['EURUSD', 'GBPUSD', 'USDJPY', 'EURJPY', 'GBPJPY']).optional(),
+  // Phase 3: validated against the registry at runtime, not a fixed enum.
+  pair: z.string().min(1).optional(),
 });
 
 async function buildFxCotSide(
@@ -873,8 +952,20 @@ async function buildFxPairData(
   pairAssetId: string,
   now: Date,
 ): Promise<FxPairData | null> {
-  const pairMeta = FX_PAIR_META[pairCode];
-  if (!pairMeta) return null;
+  const registry = await getInstrumentRegistry();
+  const instrument = registry.pairs.get(pairCode);
+  if (!instrument || !instrument.base || !instrument.quote) return null;
+  const baseCcy = registry.byCode.get(instrument.base);
+  const quoteCcy = registry.byCode.get(instrument.quote);
+  const pairMeta = {
+    label: instrument.scorecardName,
+    base: instrument.base,
+    quote: instrument.quote,
+    currAName: instrument.base,
+    currAFlag: baseCcy?.flag ?? '',
+    currBName: instrument.quote,
+    currBFlag: quoteCcy?.flag ?? '',
+  };
 
   const pairScoreRow = await prisma.edgefinderPairScore.findFirst({
     where: { pairId: pairAssetId, isCurrent: true },
@@ -974,11 +1065,25 @@ async function buildFxPairData(
     const categoryLabel = uiGroupToHeatmapCategory(row.uiGroup);
     if (!categoryLabel) continue;
 
+    // Phase 3 row visibility.
+    // HARD-excluded (rowIncluded=false): the row is not part of this pair's
+    // template at all — Tokyo Core CPI in EURUSD, AU Employment Change in
+    // USDJPY. It is omitted entirely rather than rendered as an empty line.
+    if (!row.rowIncluded) continue;
+
+    // SOFT-excluded: the row is in the template but neither side supplies an
+    // indicator (the five USD-only rows in a pair with no USD). It stays
+    // visible scoring 0, flagged so a consumer can tell "does not apply here"
+    // from "data came in neutral" — both of which are pairScore 0.
+    const inapplicable =
+      row.indicatorA.outcome === 'absent' && row.indicatorB.outcome === 'absent';
+
     const fxRow: FxIndicatorRow = {
       name: row.rowName,
       currA: buildIndicatorSide(row.indicatorA),
       currB: buildIndicatorSide(row.indicatorB),
-      pairScore: row.rowIncluded ? row.pairScore : null,
+      pairScore: row.pairScore,
+      inapplicable,
     };
 
     if (!categoryMap.has(categoryLabel)) categoryMap.set(categoryLabel, []);
@@ -1037,10 +1142,17 @@ oracleRouter.get('/fx-scorecard', async (req: Request, res: Response, next: Next
     }
 
     const now = new Date();
-    const requestedPair = parsed.data.pair as FxPairKey | undefined;
+    // requirePair throws a 400 naming the code when it is not a registered,
+    // active FX pair — so an unknown pair never falls through to a silent 404.
+    const requestedPair = parsed.data.pair
+      ? ((await requirePair(parsed.data.pair)).code as FxPairKey)
+      : undefined;
+    const registry = await getInstrumentRegistry();
     const pairCodes: FxPairKey[] = requestedPair
       ? [requestedPair]
-      : ['EURUSD', 'GBPUSD', 'USDJPY', 'EURJPY', 'GBPJPY'];
+      : ([...registry.pairs.values()]
+          .sort((a, b) => a.screenerOrder - b.screenerOrder || a.code.localeCompare(b.code))
+          .map((p) => p.code) as FxPairKey[]);
 
     const assetRecords = await prisma.asset.findMany({
       where: { code: { in: pairCodes } },
@@ -1114,11 +1226,9 @@ const historyRangeSchema = z
 // breakdown (the row breakdown shape differs and isn't part of this series).
 // ----------------------------------------------------------------------------
 
-const ASSET_SUBJECTS = ['USD', 'EUR', 'GBP', 'JPY', 'Gold'] as const;
-const PAIR_SUBJECTS = ['EURUSD', 'GBPUSD', 'USDJPY', 'EURJPY', 'GBPJPY'] as const;
-
+// Phase 3: subjects are validated against the registry at runtime.
 const scoreHistoryQuerySchema = z.object({
-  subject: z.enum([...ASSET_SUBJECTS, ...PAIR_SUBJECTS]),
+  subject: z.string().min(1),
   range: historyRangeSchema,
 });
 
@@ -1131,10 +1241,17 @@ oracleRouter.get('/score-history', async (req: Request, res: Response, next: Nex
     const { subject, range } = parsed.data;
     const now = new Date();
     const from = rangeStart(range, now);
-    const isPair = (PAIR_SUBJECTS as readonly string[]).includes(subject);
+    const { instrument, isPair } = await requireScoreSubject(subject);
+    const registry = await getInstrumentRegistry();
 
     if (isPair) {
-      const meta = FX_PAIR_META[subject];
+      const baseCcy = instrument.base ? registry.byCode.get(instrument.base) : undefined;
+      const quoteCcy = instrument.quote ? registry.byCode.get(instrument.quote) : undefined;
+      const meta = {
+        label: instrument.scorecardName,
+        currAFlag: baseCcy?.flag ?? '',
+        currBFlag: quoteCcy?.flag ?? '',
+      };
       const assetRecord = await prisma.asset.findFirst({ where: { code: subject } });
       if (!assetRecord) {
         throw new AppError(404, `Pair not found: ${subject}`, 'PAIR_NOT_FOUND');
@@ -1169,8 +1286,8 @@ oracleRouter.get('/score-history', async (req: Request, res: Response, next: Nex
     }
 
     // Asset subject
-    const dbCode = SCORECARD_KEY_TO_ASSET_CODE[subject];
-    const meta = SCORECARD_ASSET_META[subject];
+    const dbCode = instrument.code;
+    const meta = { name: instrument.scorecardName, flag: instrument.scorecardFlag };
     const assetRecord = await prisma.asset.findFirst({ where: { code: dbCode } });
     if (!assetRecord) {
       throw new AppError(404, `Asset not found: ${dbCode}`, 'ASSET_NOT_FOUND');
@@ -1284,10 +1401,9 @@ oracleRouter.get('/indicator-history', async (req: Request, res: Response, next:
 // COT page already uses, just across time. (Recon found no COT pair bug.)
 // ----------------------------------------------------------------------------
 
-const COT_HISTORY_ASSETS = ['USD', 'EUR', 'GBP', 'JPY', 'Gold'] as const;
-
+// Phase 3: validated against the registry's COT set at runtime.
 const cotHistoryQuerySchema = z.object({
-  asset: z.enum(COT_HISTORY_ASSETS),
+  asset: z.string().min(1),
   range: historyRangeSchema,
 });
 
@@ -1302,8 +1418,9 @@ oracleRouter.get('/cot-history', async (req: Request, res: Response, next: NextF
     const from = rangeStart(range, now);
 
     // Gold's cot_data is keyed by XAUUSD; currencies key by their own code.
-    const dbCode = asset === 'Gold' ? 'XAUUSD' : asset;
-    const flag = COT_ASSET_FLAG[dbCode] ?? '';
+    const cotInstrument = await requireCotAsset(asset);
+    const dbCode = cotInstrument.code;
+    const flag = cotInstrument.cotFlag;
 
     const assetRecord = await prisma.asset.findFirst({ where: { code: dbCode } });
     if (!assetRecord) {

@@ -25,7 +25,7 @@ interface FreshnessThresholds {
  * - warning: overdue, action recommended
  * - critical: significantly overdue, action required
  */
-const THRESHOLDS_BY_FREQUENCY: Record<string, FreshnessThresholds> = {
+export const THRESHOLDS_BY_FREQUENCY: Record<string, FreshnessThresholds> = {
   daily: { fresh: 5, warning: 14 },
   weekly: { fresh: 10, warning: 21 },
   monthly: { fresh: 45, warning: 75 },
@@ -33,7 +33,12 @@ const THRESHOLDS_BY_FREQUENCY: Record<string, FreshnessThresholds> = {
   event_driven: { fresh: 365, warning: 730 }, // RBI: ~8 meetings/year, so ~45-day max gap is normal
 };
 
-function classifySeverity(daysSince: number | null, freq: string): GapSeverity {
+/**
+ * Exported (Phase 3) so the EdgeFinder Oracle API can surface staleness using
+ * these same frequency-scaled bands rather than inventing a second mechanism.
+ * Behaviour unchanged.
+ */
+export function classifySeverity(daysSince: number | null, freq: string): GapSeverity {
   if (daysSince === null) return 'never';
 
   const thresholds = THRESHOLDS_BY_FREQUENCY[freq] ?? THRESHOLDS_BY_FREQUENCY.monthly;

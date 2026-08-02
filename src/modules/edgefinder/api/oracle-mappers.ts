@@ -291,6 +291,15 @@ export const EMPTY_INDICATOR_SLOTS = {
   claims: null as (1 | 0 | -1 | null),
   adp: null as (1 | 0 | -1 | null),
   jolts: null as (1 | 0 | -1 | null),
+  // Phase 3 additions. These are NEW slots, not reassignments — every existing
+  // slot keeps its name, type and meaning. Each of the four new template rows
+  // needs its own slot because the obvious existing slot is already occupied by
+  // a different row (Tokyo Core CPI vs CPI, AU Employment Change vs NFP), and
+  // sharing one would make the last row written silently clobber the first.
+  cashEarnings: null as (1 | 0 | -1 | null), // Jobs
+  auEmpl: null as (1 | 0 | -1 | null),       // Jobs
+  tokyoCpi: null as (1 | 0 | -1 | null),     // Inflation
+  caixinPmi: null as (1 | 0 | -1 | null),    // Economic Growth
 };
 
 /**
@@ -319,6 +328,25 @@ export const PAIR_ROW_TO_SLOT: Record<string, keyof typeof EMPTY_INDICATOR_SLOTS
   'Weekly Jobless Claims': 'claims',
   'JOLTS Openings': 'jolts',
   'ADP Employment': 'adp',
+  // Phase 3: the four rows activated in Phase 2, which computed and stored but
+  // had no slot and so never surfaced. Groups follow uiGroupToSectionLabel:
+  // Jobs -> JOBS MARKET, Inflation -> INFLATION, Growth -> ECONOMIC GROWTH.
+  'Labor Cash Earnings': 'cashEarnings',
+  'AU Employment Change': 'auEmpl',
+  'Tokyo Core CPI': 'tokyoCpi',
+  'China Caixin Mfg PMI': 'caixinPmi',
+};
+
+/**
+ * uiGroup for each slot, so a consumer can group the screener columns without
+ * re-deriving it from the row name. Mirrors the AssetData field comments.
+ */
+export const SLOT_UI_GROUP: Record<keyof typeof EMPTY_INDICATOR_SLOTS, 'Growth' | 'Inflation' | 'Jobs'> = {
+  gdp: 'Growth', pmiM: 'Growth', pmiS: 'Growth', retail: 'Growth', consConf: 'Growth',
+  caixinPmi: 'Growth',
+  cpi: 'Inflation', ppi: 'Inflation', pce: 'Inflation', yield: 'Inflation', tokyoCpi: 'Inflation',
+  nfp: 'Jobs', unemp: 'Jobs', claims: 'Jobs', adp: 'Jobs', jolts: 'Jobs',
+  cashEarnings: 'Jobs', auEmpl: 'Jobs',
 };
 
 // ============================================================================
@@ -358,130 +386,18 @@ export function dbFrequencyToHeatmapFrequency(
 }
 
 // ============================================================================
-// Asset display metadata (hardcoded from frontend demo data)
+// Asset display metadata
 // ============================================================================
-
-export interface AssetMeta {
-  code: string;
-  dbCode: string; // asset.code in DB (pairs use pair code, currencies use currency code)
-  flag: string;
-  type: 'Forex' | 'Commodity' | 'Index';
-  name: string;
-  currencyCode?: string; // for scorecard: maps key to DB asset code
-}
-
-/** The 8 assets shown in the Oracle screener (frontend assets.ts order). */
-export const ORACLE_ASSETS: AssetMeta[] = [
-  { code: 'EURUSD', dbCode: 'EURUSD', flag: '🇪🇺🇺🇸', type: 'Forex', name: 'EUR/USD' },
-  { code: 'GBPUSD', dbCode: 'GBPUSD', flag: '🇬🇧🇺🇸', type: 'Forex', name: 'GBP/USD' },
-  { code: 'USDJPY', dbCode: 'USDJPY', flag: '🇺🇸🇯🇵', type: 'Forex', name: 'USD/JPY' },
-  { code: 'EURJPY', dbCode: 'EURJPY', flag: '🇪🇺🇯🇵', type: 'Forex', name: 'EUR/JPY' },
-  { code: 'GBPJPY', dbCode: 'GBPJPY', flag: '🇬🇧🇯🇵', type: 'Forex', name: 'GBP/JPY' },
-  { code: 'XAUUSD', dbCode: 'XAUUSD', flag: '🥇', type: 'Commodity', name: 'Gold' },
-  { code: 'SPY', dbCode: 'SPY', flag: '🇺🇸', type: 'Index', name: 'S&P 500 ETF' },
-  { code: 'NAS100', dbCode: 'NAS100', flag: '🇺🇸', type: 'Index', name: 'NASDAQ 100' },
-];
-
-/** Scorecard key → DB asset code mapping. */
-export const SCORECARD_KEY_TO_ASSET_CODE: Record<string, string> = {
-  USD: 'USD',
-  EUR: 'EUR',
-  GBP: 'GBP',
-  JPY: 'JPY',
-  Gold: 'XAUUSD',
-  SPY: 'SPY',
-  NAS100: 'NAS100',
-};
-
-/** Scorecard asset metadata (name, flag). */
-export const SCORECARD_ASSET_META: Record<string, { name: string; flag: string }> = {
-  USD: { name: 'US Dollar', flag: '🇺🇸' },
-  EUR: { name: 'Euro', flag: '🇪🇺' },
-  GBP: { name: 'British Pound', flag: '🇬🇧' },
-  JPY: { name: 'Japanese Yen', flag: '🇯🇵' },
-  Gold: { name: 'Gold (XAUUSD)', flag: '🥇' },
-  SPY: { name: 'S&P 500 (SPY)', flag: '📈' },
-  NAS100: { name: 'Nasdaq 100', flag: '💻' },
-};
-
-/** COT asset display code for each pair (base currency's cot_data asset). */
-export const PAIR_COT_CURRENCY: Record<string, string> = {
-  EURUSD: 'EUR',
-  GBPUSD: 'GBP',
-  USDJPY: 'JPY',
-  EURJPY: 'EUR',
-  GBPJPY: 'GBP',
-};
-
-/**
- * Assets shown on the COT (Commitment of Traders) page.
- *
- * COT positioning is reported by the CFTC per **futures contract**, so the rows
- * are the individual instruments we track — the four currency futures + Gold —
- * NOT the forex pairs. cot_data is keyed by the currency/commodity asset code
- * (USD/EUR/GBP/JPY/XAUUSD), which is why iterating the pair-based ORACLE_ASSETS
- * only ever matched XAUUSD. SPY and NAS100 are deferred (no CFTC ingestion yet).
- */
-export interface CotAssetMeta {
-  code: string;   // display code + React key
-  dbCode: string; // asset.code in DB that owns the cot_data / scorecard rows
-  flag: string;
-  type: 'Currency' | 'Commodity' | 'Index';
-  deferred?: boolean;
-}
-
-export const COT_ASSETS: CotAssetMeta[] = [
-  { code: 'USD', dbCode: 'USD', flag: '🇺🇸', type: 'Currency' },
-  { code: 'EUR', dbCode: 'EUR', flag: '🇪🇺', type: 'Currency' },
-  { code: 'GBP', dbCode: 'GBP', flag: '🇬🇧', type: 'Currency' },
-  { code: 'JPY', dbCode: 'JPY', flag: '🇯🇵', type: 'Currency' },
-  { code: 'XAUUSD', dbCode: 'XAUUSD', flag: '🪙', type: 'Commodity' },
-  { code: 'SPY', dbCode: 'SPY', flag: '🇺🇸', type: 'Index', deferred: true },
-  { code: 'NAS100', dbCode: 'NAS100', flag: '🇺🇸', type: 'Index', deferred: true },
-];
-
-/** COT flags per asset in COT table. */
-export const COT_ASSET_FLAG: Record<string, string> = {
-  EURUSD: '🇪🇺🇺🇸',
-  GBPUSD: '🇬🇧🇺🇸',
-  USDJPY: '🇺🇸🇯🇵',
-  EURJPY: '🇪🇺🇯🇵',
-  GBPJPY: '🇬🇧🇯🇵',
-  XAUUSD: '🪙',   // cot.ts uses coin emoji
-  SPY: '🇺🇸',
-  NAS100: '🇺🇸',
-};
-
-export const COT_ASSET_TYPE: Record<string, 'Forex' | 'Commodity' | 'Index'> = {
-  EURUSD: 'Forex',
-  GBPUSD: 'Forex',
-  USDJPY: 'Forex',
-  EURJPY: 'Forex',
-  GBPJPY: 'Forex',
-  XAUUSD: 'Commodity',
-  SPY: 'Index',
-  NAS100: 'Index',
-};
-
-// ============================================================================
-// Fx pair display metadata
-// ============================================================================
-
-export const FX_PAIR_META: Record<string, {
-  label: string;
-  currAName: string;
-  currAFlag: string;
-  currBName: string;
-  currBFlag: string;
-  base: string;
-  quote: string;
-}> = {
-  EURUSD: { label: 'EUR / USD', currAName: 'EUR', currAFlag: '🇪🇺', currBName: 'USD', currBFlag: '🇺🇸', base: 'EUR', quote: 'USD' },
-  GBPUSD: { label: 'GBP / USD', currAName: 'GBP', currAFlag: '🇬🇧', currBName: 'USD', currBFlag: '🇺🇸', base: 'GBP', quote: 'USD' },
-  USDJPY: { label: 'USD / JPY', currAName: 'USD', currAFlag: '🇺🇸', currBName: 'JPY', currBFlag: '🇯🇵', base: 'USD', quote: 'JPY' },
-  EURJPY: { label: 'EUR / JPY', currAName: 'EUR', currAFlag: '🇪🇺', currBName: 'JPY', currBFlag: '🇯🇵', base: 'EUR', quote: 'JPY' },
-  GBPJPY: { label: 'GBP / JPY', currAName: 'GBP', currAFlag: '🇬🇧', currBName: 'JPY', currBFlag: '🇯🇵', base: 'GBP', quote: 'JPY' },
-};
+//
+// PHASE 3: the hardcoded instrument lists that used to live here —
+// ORACLE_ASSETS, SCORECARD_KEY_TO_ASSET_CODE, SCORECARD_ASSET_META,
+// PAIR_COT_CURRENCY, COT_ASSETS, COT_ASSET_FLAG, COT_ASSET_TYPE and
+// FX_PAIR_META — have been deleted. Every one of them is now derived from the
+// `assets` table by `instrument-registry.ts`, and their display strings (flag,
+// name, ordering, the 'Gold' key alias) live in Asset.metadata.display as data.
+//
+// An instrument added to the registry now appears everywhere at once, instead
+// of computing correctly in the database and appearing nowhere.
 
 /** Category color config matching frontend. */
 export const CATEGORY_COLORS: Record<string, string> = {

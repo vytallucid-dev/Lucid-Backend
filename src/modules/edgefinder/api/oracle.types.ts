@@ -35,21 +35,61 @@ export interface AssetData {
   pmiS: IndicatorValue;
   retail: IndicatorValue;
   consConf: IndicatorValue;
+  /** Phase 3 addition — China Caixin Mfg PMI (AUD-side proxy). */
+  caixinPmi: IndicatorValue;
   // Inflation
   cpi: IndicatorValue;
   ppi: IndicatorValue;
   pce: IndicatorValue;
   yield: IndicatorValue;
+  /** Phase 3 addition — Tokyo Core CPI (JPY). */
+  tokyoCpi: IndicatorValue;
   // Jobs Market
   nfp: IndicatorValue;
   unemp: IndicatorValue;
   claims: IndicatorValue;
   adp: IndicatorValue;
   jolts: IndicatorValue;
+  /** Phase 3 addition — Labor Cash Earnings (JPY wage growth). */
+  cashEarnings: IndicatorValue;
+  /** Phase 3 addition — AU Employment Change. */
+  auEmpl: IndicatorValue;
   outcome: 'scored' | 'insufficient_data' | 'deferred';
   reason: string | null;
+  /**
+   * Phase 3 addition. Slots that are null because the row does not apply to
+   * this instrument at all, as opposed to null because data is missing.
+   * A consumer can render these as "—" rather than "awaiting data".
+   */
+  inapplicableSlots: string[];
+  /**
+   * Phase 3 addition. How many of this instrument's scoring inputs currently
+   * have no usable data, so a confident-looking number built on silence is
+   * legible as such.
+   */
+  dataHealth: DataHealth;
   /** ISO date of the latest pair-score/scorecard underlying this row (global max across assets). */
   lastUpdated: string | null;
+}
+
+/**
+ * Phase 3 addition. Insufficient-data census for an instrument.
+ * `stale` counts inputs whose latest reading is past its frequency-scaled
+ * freshness threshold (the same bands the admin data-gaps report uses).
+ */
+export interface DataHealth {
+  /** Inputs considered for this instrument (excluding COT). */
+  total: number;
+  /** Inputs with no usable reading — outcome insufficient_data / absent. */
+  insufficient: number;
+  /** Inputs present but past their frequency-scaled freshness threshold. */
+  stale: number;
+  /** Codes of the insufficient inputs, for display. */
+  insufficientCodes: string[];
+  /** Codes of the stale inputs, with their age band. */
+  staleCodes: Array<{ code: string; daysSince: number; severity: 'warning' | 'critical' }>;
+  /** True when a significant share (>= 1/3) of inputs are insufficient. */
+  degraded: boolean;
 }
 
 // ============================================================================
@@ -57,7 +97,13 @@ export interface AssetData {
 // Matches frontend src/data/scorecard.ts
 // ============================================================================
 
-export type ScorecardAssetKey = 'USD' | 'EUR' | 'GBP' | 'JPY' | 'Gold' | 'SPY' | 'NAS100';
+/**
+ * Phase 3: widened from a fixed union to `string`. The valid set is now the
+ * instrument registry, resolved at runtime — a union here would be one more
+ * hardcoded instrument list, and would have to be edited for every new economy.
+ * The wire format is unchanged: this was, and remains, a JSON string.
+ */
+export type ScorecardAssetKey = string;
 
 export interface ScorecardIndicator {
   name: string;
@@ -139,7 +185,11 @@ export interface CotAsset {
 // Matches frontend src/data/heatmap.ts
 // ============================================================================
 
-export type EconomyKey = 'US' | 'EU' | 'UK' | 'JP';
+/**
+ * Phase 3: widened from a fixed union. Economies now derive from
+ * asset_indicator_map, so AUD contributes both AU and CN. Still a JSON string.
+ */
+export type EconomyKey = string;
 export type HeatmapFrequency = 'Monthly' | 'Quarterly' | 'Weekly' | 'Daily';
 
 export interface HeatmapIndicator {
@@ -165,12 +215,20 @@ export type HeatmapResponse = Record<EconomyKey, HeatmapIndicator[]>;
 // Matches frontend src/data/fx-scorecard.ts
 // ============================================================================
 
-export type FxPairKey = 'EURUSD' | 'GBPUSD' | 'USDJPY' | 'EURJPY' | 'GBPJPY';
+/** Phase 3: widened from a fixed union to `string` — see ScorecardAssetKey. */
+export type FxPairKey = string;
 export type ResultTag = 'BEAT' | 'MISS' | 'MET' | 'N/A';
 
 export interface FxIndicatorRow {
   name: string;
   frequency?: string;
+  /**
+   * Phase 3 addition. True when this row is in the pair's template but neither
+   * currency supplies an indicator, so its 0 means "not applicable to this
+   * pair" rather than "data came in neutral". Hard-excluded rows are omitted
+   * from the response entirely and never carry this flag.
+   */
+  inapplicable?: boolean;
   currA: {
     result: ResultTag;
     actual: string | null;      // null when N/A

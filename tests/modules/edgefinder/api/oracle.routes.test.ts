@@ -25,6 +25,74 @@ vi.mock('@core/middleware/supabase-auth.middleware', () => ({
   requireRole: () => (_req: import('express').Request, _res: import('express').Response, next: import('express').NextFunction) => next(),
 }));
 
+// Phase 3: the routes derive their instrument universe from the registry. It is
+// stubbed here with a fixture set — mirroring the real filter (active +
+// EdgeFinder-scoped + mapped, so SPY/NAS100 are absent) — so route logic stays
+// testable without also mocking the registry's own asset query.
+const { registryFixture } = vi.hoisted(() => {
+  const mk = (o: Record<string, unknown>) => ({
+    cotFlag: o.flag, scorecardFlag: o.flag, scorecardName: o.name,
+    base: null, quote: null, cotContractCode: null, hasMapRows: true,
+    screenerOrder: 0, cotOrder: 0, assetClass: 'currency', ...o,
+  });
+  const currencies = [
+    mk({ code: 'USD', key: 'USD', flag: '🇺🇸', name: 'US Dollar', type: 'Currency', cotContractCode: '098662' }),
+    mk({ code: 'EUR', key: 'EUR', flag: '🇪🇺', name: 'Euro', type: 'Currency', cotContractCode: '099741' }),
+    mk({ code: 'GBP', key: 'GBP', flag: '🇬🇧', name: 'British Pound', type: 'Currency', cotContractCode: '096742' }),
+    mk({ code: 'JPY', key: 'JPY', flag: '🇯🇵', name: 'Japanese Yen', type: 'Currency', cotContractCode: '097741' }),
+  ];
+  const gold = mk({ code: 'XAUUSD', key: 'Gold', flag: '🥇', cotFlag: '🪙', name: 'Gold',
+    scorecardName: 'Gold (XAUUSD)', type: 'Commodity', assetClass: 'commodity', cotContractCode: '088691' });
+  const pairs = [
+    ['EURUSD', 'EUR', 'USD'], ['GBPUSD', 'GBP', 'USD'], ['USDJPY', 'USD', 'JPY'],
+    ['EURJPY', 'EUR', 'JPY'], ['GBPJPY', 'GBP', 'JPY'],
+  ].map(([code, b, q], i) => mk({
+    code, key: code, flag: '🏳️', name: `${b}/${q}`, scorecardName: `${b} / ${q}`,
+    type: 'Forex', assetClass: 'forex_pair', base: b, quote: q, hasMapRows: false, screenerOrder: i,
+  }));
+  const all = [...currencies, gold, ...pairs];
+  return {
+    registryFixture: {
+      byCode: new Map(all.map((i) => [i.code as string, i])),
+      screener: [...pairs, gold],
+      scorecardByKey: new Map([...currencies, gold].map((i) => [i.key as string, i])),
+      pairs: new Map(pairs.map((i) => [i.code as string, i])),
+      cot: [...currencies, gold],
+    },
+  };
+});
+
+vi.mock('@modules/edgefinder/api/instrument-registry', async () => {
+  const { AppError } = await import('@core/middleware/error-handler');
+  const reg = registryFixture;
+  return {
+    getInstrumentRegistry: vi.fn(async () => reg),
+    invalidateInstrumentRegistry: vi.fn(),
+    requireScorecardAsset: vi.fn(async (k: string) => {
+      const f = reg.scorecardByKey.get(k);
+      if (!f) throw new AppError(400, `Unknown asset: ${k}`, 'UNKNOWN_ASSET');
+      return f;
+    }),
+    requirePair: vi.fn(async (c: string) => {
+      const f = reg.pairs.get(c);
+      if (!f) throw new AppError(400, `Unknown pair: ${c}`, 'UNKNOWN_PAIR');
+      return f;
+    }),
+    requireScoreSubject: vi.fn(async (s: string) => {
+      const p = reg.pairs.get(s);
+      if (p) return { instrument: p, isPair: true };
+      const a = reg.scorecardByKey.get(s);
+      if (a) return { instrument: a, isPair: false };
+      throw new AppError(400, `Unknown subject: ${s}`, 'UNKNOWN_SUBJECT');
+    }),
+    requireCotAsset: vi.fn(async (k: string) => {
+      const f = reg.cot.find((i) => i.key === k || i.code === k);
+      if (!f) throw new AppError(400, `Unknown COT asset: ${k}`, 'UNKNOWN_COT_ASSET');
+      return f;
+    }),
+  };
+});
+
 vi.mock('@core/db/prisma', () => ({
   prisma: {
     asset: { findMany: vi.fn(), findFirst: vi.fn() },
@@ -33,6 +101,7 @@ vi.mock('@core/db/prisma', () => ({
     indicator: { findMany: vi.fn(), findUnique: vi.fn() },
     dataPoint: { findMany: vi.fn(), findFirst: vi.fn() },
     cotData: { findMany: vi.fn(), findFirst: vi.fn() },
+    assetIndicatorMap: { findMany: vi.fn() },
   },
 }));
 
@@ -93,10 +162,27 @@ function makeXauScorecard() {
   };
 }
 
+const mockedMap = prisma.assetIndicatorMap as unknown as Record<string, ReturnType<typeof vi.fn>>;
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockedScorecard.findMany.mockResolvedValue([]);
   mockedPairScore.findMany.mockResolvedValue([]);
+  // Phase 3: dataHealth reads indicator frequencies; default to none.
+  mockedIndicator.findMany.mockResolvedValue([]);
+  // Heatmap derives its economies from asset_indicator_map, grouped by owning
+  // ASSET (Issue 2) rather than raw country — the query now selects indicatorId
+  // directly rather than a nested indicator.country. Placeholder ids here (not
+  // matching any real indicator a test mocks) are enough to keep all four
+  // economy keys present by default; a test asserting a specific indicator's
+  // presence within a group overrides this with a row using that indicator's
+  // real id.
+  mockedMap.findMany.mockResolvedValue([
+    { asset: { code: 'USD' }, indicatorId: 'placeholder-usd' },
+    { asset: { code: 'EUR' }, indicatorId: 'placeholder-eur' },
+    { asset: { code: 'GBP' }, indicatorId: 'placeholder-gbp' },
+    { asset: { code: 'JPY' }, indicatorId: 'placeholder-jpy' },
+  ]);
 });
 
 // ============================================================================
@@ -104,7 +190,9 @@ beforeEach(() => {
 // ============================================================================
 
 describe('GET /api/oracle/assets', () => {
-  it('returns success:true and data array with 8 assets', async () => {
+  // Phase 3: SPY/NAS100 are isActive=false and no longer appear anywhere in the
+  // API (Gate 3), so the screener is the 5 FX pairs + Gold.
+  it('returns success:true and data array with 6 active instruments', async () => {
     mockedAsset.findMany.mockResolvedValue(makeAssets());
     mockedPairScore.findMany.mockResolvedValue(
       fxPairCodes.map(makePairScoreRow),
@@ -118,10 +206,12 @@ describe('GET /api/oracle/assets', () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(Array.isArray(res.body.data)).toBe(true);
-    expect(res.body.data).toHaveLength(8);
+    expect(res.body.data).toHaveLength(6);
   });
 
-  it('returns outcome=deferred with null score/bias/cot and all 14 indicator slots null for SPY and NAS100', async () => {
+  // Phase 3 (Gate 3): SPY/NAS100 are isActive=false, so instead of being
+  // rendered as deferred rows they are absent from the response entirely.
+  it('omits SPY and NAS100 entirely rather than returning deferred rows', async () => {
     mockedAsset.findMany.mockResolvedValue(makeAssets());
     mockedPairScore.findMany.mockResolvedValue(
       fxPairCodes.map(makePairScoreRow),
@@ -132,18 +222,10 @@ describe('GET /api/oracle/assets', () => {
       .get('/api/oracle/assets')
 ;
 
-    for (const code of ['SPY', 'NAS100']) {
+    expect(res.status).toBe(200);
+    for (const code of ['SPY', 'NAS100', 'US30']) {
       const row = res.body.data.find((d: { asset: string }) => d.asset === code);
-      expect(row, `${code} row should exist`).toBeDefined();
-      expect(row.outcome).toBe('deferred');
-      expect(row.score).toBeNull();
-      expect(row.bias).toBeNull();
-      expect(row.cot).toBeNull();
-      expect(typeof row.reason).toBe('string');
-      expect(row.reason.length).toBeGreaterThan(0);
-      for (const slot of ['gdp', 'pmiM', 'pmiS', 'retail', 'consConf', 'cpi', 'ppi', 'pce', 'yield', 'nfp', 'unemp', 'claims', 'adp', 'jolts']) {
-        expect(row[slot], `${code}.${slot} should be null`).toBeNull();
-      }
+      expect(row, `${code} must not appear`).toBeUndefined();
     }
   });
 
@@ -294,39 +376,22 @@ describe('GET /api/oracle/scorecard', () => {
     expect(inflSection.indicators[0].actual).toBe('3.5%');
   });
 
-  it('returns outcome=deferred with null fields for SPY', async () => {
-    // No DB mocks needed — deferred path short-circuits before any query
+  it('returns 400 naming the code for SPY (inactive, not a registered asset)', async () => {
     const res = await request(app)
       .get('/api/oracle/scorecard?asset=SPY')
 ;
 
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.data.key).toBe('SPY');
-    expect(res.body.data.outcome).toBe('deferred');
-    expect(res.body.data.totalScore).toBeNull();
-    expect(res.body.data.fundamentals).toBeNull();
-    expect(res.body.data.cotScore).toBeNull();
-    expect(res.body.data.bias).toBeNull();
-    expect(res.body.data.cot).toBeNull();
-    expect(res.body.data.scoreHistory).toBeNull();
-    expect(res.body.data.sections).toHaveLength(0);
-    expect(typeof res.body.data.reason).toBe('string');
-    expect(res.body.data.reason.length).toBeGreaterThan(0);
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain('SPY');
   });
 
-  it('returns outcome=deferred with null fields for NAS100', async () => {
+  it('returns 400 naming the code for NAS100 (inactive, not a registered asset)', async () => {
     const res = await request(app)
       .get('/api/oracle/scorecard?asset=NAS100')
 ;
 
-    expect(res.status).toBe(200);
-    expect(res.body.data.outcome).toBe('deferred');
-    expect(res.body.data.totalScore).toBeNull();
-    expect(res.body.data.cot).toBeNull();
-    expect(res.body.data.scoreHistory).toBeNull();
-    expect(res.body.data.sections).toHaveLength(0);
-    expect(res.body.data.reason).toBe('Scoring deferred pending backtesting. Activation planned post-v1.');
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain('NAS100');
   });
 
   it('returns outcome=insufficient_data with null fields when asset is in DB but has no scorecard', async () => {
@@ -435,7 +500,7 @@ describe('GET /api/oracle/cot', () => {
     ];
   }
 
-  it('returns success:true with 7-element data array when no COT data', async () => {
+  it('returns success:true with 5-element data array when no COT data', async () => {
     mockedAsset.findMany.mockResolvedValue(makeCotAssets());
     mockedCotData.findMany.mockResolvedValue([]);
     mockedScorecard.findMany.mockResolvedValue([]);
@@ -446,9 +511,9 @@ describe('GET /api/oracle/cot', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.data).toHaveLength(7);
+    expect(res.body.data).toHaveLength(5);
     expect(res.body.data.map((d: { asset: string }) => d.asset)).toEqual([
-      'USD', 'EUR', 'GBP', 'JPY', 'XAUUSD', 'SPY', 'NAS100',
+      'USD', 'EUR', 'GBP', 'JPY', 'XAUUSD',
     ]);
   });
 
@@ -476,7 +541,10 @@ describe('GET /api/oracle/cot', () => {
     expect(eur.trend).toBeNull();
   });
 
-  it('marks SPY and NAS100 as deferred', async () => {
+  // Phase 3 (Gate 3): SPY/NAS100/US30 gained CFTC contract codes in Phase 1 but
+  // are still isActive=false, so the COT list filters them out rather than
+  // showing them as deferred rows.
+  it('omits SPY/NAS100/US30 despite them holding contract codes', async () => {
     mockedAsset.findMany.mockResolvedValue(makeCotAssets());
     mockedCotData.findMany.mockResolvedValue([]);
     mockedScorecard.findMany.mockResolvedValue([]);
@@ -485,12 +553,9 @@ describe('GET /api/oracle/cot', () => {
       .get('/api/oracle/cot')
 ;
 
-    for (const code of ['SPY', 'NAS100']) {
+    for (const code of ['SPY', 'NAS100', 'US30']) {
       const row = res.body.data.find((d: { asset: string }) => d.asset === code);
-      expect(row.outcome).toBe('deferred');
-      expect(row.cotScore).toBeNull();
-      expect(row.trend).toBeNull();
-      expect(row.reason).toBe('Scoring deferred pending backtesting. Activation planned post-v1.');
+      expect(row, `${code} must not appear on the COT page`).toBeUndefined();
     }
   });
 
@@ -583,6 +648,7 @@ describe('GET /api/oracle/heatmap', () => {
     mockedIndicator.findMany.mockResolvedValue([
       { id: 'ind-cpi', code: 'US_CPI_YOY', name: 'US CPI YoY', country: 'US', uiGroup: 'Inflation', frequency: 'monthly', isActive: true },
     ]);
+    mockedMap.findMany.mockResolvedValue([{ asset: { code: 'USD' }, indicatorId: 'ind-cpi' }]);
     mockedAsset.findMany.mockResolvedValue([{ id: 'asset-USD', code: 'USD' }]);
     mockedDataPoint.findMany.mockResolvedValue([{
       indicatorId: 'ind-cpi',
@@ -614,6 +680,7 @@ describe('GET /api/oracle/heatmap', () => {
     mockedIndicator.findMany.mockResolvedValue([
       { id: 'ind-adp', code: 'US_ADP', name: 'ADP Employment Change', country: 'US', uiGroup: 'Jobs', frequency: 'monthly', isActive: true },
     ]);
+    mockedMap.findMany.mockResolvedValue([{ asset: { code: 'USD' }, indicatorId: 'ind-adp' }]);
     mockedAsset.findMany.mockResolvedValue([{ id: 'asset-USD', code: 'USD' }]);
     mockedDataPoint.findMany.mockResolvedValue([]);
     mockedScorecard.findMany.mockResolvedValue([{
@@ -641,6 +708,7 @@ describe('GET /api/oracle/heatmap', () => {
     mockedIndicator.findMany.mockResolvedValue([
       { id: 'ind-nfp', code: 'US_NFP', name: 'Non-Farm Payrolls', country: 'US', uiGroup: 'Jobs', frequency: 'monthly', isActive: true },
     ]);
+    mockedMap.findMany.mockResolvedValue([{ asset: { code: 'USD' }, indicatorId: 'ind-nfp' }]);
     mockedAsset.findMany.mockResolvedValue([{ id: 'asset-USD', code: 'USD' }]);
     mockedDataPoint.findMany.mockResolvedValue([{
       indicatorId: 'ind-nfp',
@@ -670,6 +738,7 @@ describe('GET /api/oracle/heatmap', () => {
     mockedIndicator.findMany.mockResolvedValue([
       { id: 'ind-cpi', code: 'US_CPI_YOY', name: 'CPI YoY', country: 'US', uiGroup: 'Inflation', frequency: 'monthly', isActive: true },
     ]);
+    mockedMap.findMany.mockResolvedValue([{ asset: { code: 'USD' }, indicatorId: 'ind-cpi' }]);
     mockedAsset.findMany.mockResolvedValue([{ id: 'asset-USD', code: 'USD' }]);
     mockedDataPoint.findMany.mockResolvedValue([{
       indicatorId: 'ind-cpi',

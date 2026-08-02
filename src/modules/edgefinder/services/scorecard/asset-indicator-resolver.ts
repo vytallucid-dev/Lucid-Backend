@@ -9,9 +9,19 @@ export interface ResolvedIndicator {
   category: IndicatorCategory;
   isCot: boolean;
   /**
-   * For Gold (XAUUSD), all non-COT US indicators have their score sign
-   * flipped by the scorecard assembly layer — a 100% strict USD inverse
-   * with no per-indicator exceptions.
+   * Asset-level sign applied on top of the rule layer: `final = raw * polarity`.
+   *
+   * Phase 2: this replaces the `flipScoreForGold` boolean. A single boolean can
+   * only express "flip everything" (Gold, a strict USD inverse). Indices need
+   * MIXED signs — a growth beat is bullish for both USD and equities (+1) while
+   * an inflation beat is bullish USD but bearish equities (-1) — which no
+   * global flag can represent. Sourced from asset_indicator_map.polarity.
+   */
+  polarity: 1 | -1;
+  /**
+   * LEGACY, derived: `polarity === -1`. Retained solely because it is a key in
+   * the persisted `indicatorBreakdown` JSON (and therefore in the API response
+   * shape, which Phase 3 owns). Never drives arithmetic any more — polarity does.
    */
   flipScoreForGold: boolean;
 }
@@ -19,9 +29,25 @@ export interface ResolvedIndicator {
 export interface AssetIndicatorMapping {
   assetCode: string;
   assetId: string;
+  /**
+   * Phase 4: the asset's assetClass ('currency', 'commodity', 'forex_pair',
+   * 'index'), threaded through from the Asset row this resolver already
+   * fetches. Lets a caller derive asset-category eligibility (e.g. "is this
+   * an index") without a hardcoded code list or an extra query — see
+   * compass-overrides.ts Override 1.
+   */
+  assetClass: string;
   indicators: ResolvedIndicator[];
 }
 
+/**
+ * PHASE 2 — SUPERSEDED, INTENTIONALLY RETAINED, NO LONGER READ.
+ *
+ * Membership now comes from the asset_indicator_map table (see
+ * resolveAssetIndicators below). This constant stays in place, unused, until
+ * the regression gate has been signed off and removal is explicitly approved.
+ * Do not add new assets here — they will have no effect.
+ */
 const COUNTRY_BY_ASSET: Record<string, { fundamental: string[]; cot: string }> = {
   USD: { fundamental: ['US'], cot: 'USD' },
   EUR: { fundamental: ['EU'], cot: 'EUR' },
@@ -29,6 +55,7 @@ const COUNTRY_BY_ASSET: Record<string, { fundamental: string[]; cot: string }> =
   JPY: { fundamental: ['JP'], cot: 'JPY' },
   XAUUSD: { fundamental: ['US'], cot: 'XAU' },
 };
+void COUNTRY_BY_ASSET;
 
 function uiGroupToCategory(uiGroup: string | null): IndicatorCategory {
   switch (uiGroup) {
@@ -47,56 +74,60 @@ function uiGroupToCategory(uiGroup: string | null): IndicatorCategory {
 /**
  * Resolve the full indicator set for an asset's scorecard.
  *
- * Country-code conventions in the seed:
- *   - Fundamentals: 'US' / 'EU' / 'UK' / 'JP'
- *   - COT: 'USD' / 'EUR' / 'GBP' / 'JPY' / 'XAU'
+ * Phase 2: membership, COT identification and sign all come from the
+ * `asset_indicator_map` table. Nothing about which indicators belong to which
+ * asset is expressed in code any more — adding an economy or an instrument is
+ * a data insert.
  *
- * Gold (XAUUSD) shares the US fundamentals indicator set with USD. Score-flip
- * (negate sign) is handled at the scorecard-assembly layer, NOT here. This
- * resolver flags each indicator with `flipScoreForGold` so the caller knows
- * which entries to negate for Gold.
+ * Ordering is `uiGroup ASC, code ASC` on the indicator, matching the previous
+ * country-query ordering exactly so the persisted `indicatorBreakdown` array
+ * keeps byte-identical ordering across the cutover.
+ *
+ * An asset with no map rows THROWS. A missing mapping is a configuration bug;
+ * silently scoring 0 would look like a real (neutral) reading.
  */
 export async function resolveAssetIndicators(
   assetCode: string,
 ): Promise<AssetIndicatorMapping> {
-  const mapping = COUNTRY_BY_ASSET[assetCode];
-  if (!mapping) {
-    throw new AppError(
-      404,
-      `No indicator mapping for asset code: ${assetCode}`,
-      'UNKNOWN_ASSET',
-    );
-  }
-
   const asset = await prisma.asset.findUnique({ where: { code: assetCode } });
   if (!asset) {
     throw new AppError(404, `Asset not found: ${assetCode}`, 'ASSET_NOT_FOUND');
   }
 
-  const indicators = await prisma.indicator.findMany({
+  const mapRows = await prisma.assetIndicatorMap.findMany({
     where: {
-      tool: 'edgefinder',
-      isActive: true,
-      country: { in: [...mapping.fundamental, mapping.cot] },
+      assetId: asset.id,
+      indicator: { tool: 'edgefinder', isActive: true },
     },
-    orderBy: [{ uiGroup: 'asc' }, { code: 'asc' }],
+    include: { indicator: true },
+    orderBy: [{ indicator: { uiGroup: 'asc' } }, { indicator: { code: 'asc' } }],
   });
 
-  const resolved: ResolvedIndicator[] = indicators.map((ind) => {
-    const isCot = ind.uiGroup === 'COT' || ind.country === mapping.cot;
+  if (mapRows.length === 0) {
+    throw new AppError(
+      500,
+      `No indicator map rows for asset code: ${assetCode} — asset_indicator_map has no active entries for this asset. This is a configuration gap, not a neutral score.`,
+      'ASSET_NOT_MAPPED',
+    );
+  }
+
+  const resolved: ResolvedIndicator[] = mapRows.map((m) => {
+    const polarity: 1 | -1 = m.polarity === -1 ? -1 : 1;
     return {
-      indicatorId: ind.id,
-      indicatorCode: ind.code,
-      uiGroup: ind.uiGroup ?? 'Other',
-      category: uiGroupToCategory(ind.uiGroup),
-      isCot,
-      flipScoreForGold: assetCode === 'XAUUSD' && !isCot,
+      indicatorId: m.indicator.id,
+      indicatorCode: m.indicator.code,
+      uiGroup: m.indicator.uiGroup ?? 'Other',
+      category: uiGroupToCategory(m.indicator.uiGroup),
+      isCot: m.isCot,
+      polarity,
+      flipScoreForGold: polarity === -1,
     };
   });
 
   return {
     assetCode,
     assetId: asset.id,
+    assetClass: asset.assetClass,
     indicators: resolved,
   };
 }

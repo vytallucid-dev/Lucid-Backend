@@ -162,7 +162,10 @@ async function scoreOneIndicator(
   }
 
   const rawScore = result.score;
-  const finalScore = indicator.flipScoreForGold ? -rawScore : rawScore;
+  // Phase 2: asset-level sign comes from asset_indicator_map.polarity.
+  // Gold's rows all carry -1, so this is arithmetically identical to the
+  // previous `flipScoreForGold ? -rawScore : rawScore`.
+  const finalScore = rawScore * indicator.polarity;
 
   return {
     indicator,
@@ -256,7 +259,12 @@ export async function assembleAssetScorecard(
       category: s.indicator.category,
     }));
 
-  const overrides = computeCompassOverridesForAsset(assetCode, gate, overrideInput);
+  const overrides = computeCompassOverridesForAsset(
+    assetCode,
+    mapping.assetClass,
+    gate,
+    overrideInput,
+  );
   const compassAdjustment = overrides.totalAdjustment;
 
   const fundamentalsScore = baseFundamentalsScore + compassAdjustment;

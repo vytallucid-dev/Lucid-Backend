@@ -1,97 +1,199 @@
-import { describe, it, expect } from 'vitest';
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+
+/**
+ * Phase 2: the template and the pair universe both come from the database.
+ * The static PAIR_TEMPLATE / PAIR_DEFINITIONS arrays were removed, so these
+ * tests drive the real loaders against a mocked Prisma.
+ */
+type TemplateRow = {
+  displayName: string;
+  uiGroup: string;
+  treatment: string;
+  rowOrder: number;
+  isActive: boolean;
+  currencies: Array<{ currencyCode: string; indicatorCode: string | null }>;
+};
+
+type PairAsset = {
+  code: string;
+  metadata: Record<string, unknown> | null;
+};
+
+const fixtures: { rows: TemplateRow[]; pairs: PairAsset[] } = { rows: [], pairs: [] };
+
+vi.mock('@core/db/prisma', () => ({
+  prisma: {
+    pairTemplateRow: {
+      findMany: vi.fn(async ({ where }: { where?: { isActive?: boolean } }) =>
+        fixtures.rows
+          .filter((r) => (where?.isActive === undefined ? true : r.isActive === where.isActive))
+          .sort((a, b) => a.rowOrder - b.rowOrder),
+      ),
+    },
+    asset: {
+      findMany: vi.fn(async () => fixtures.pairs),
+    },
+  },
+}));
+
 import {
-  PAIR_TEMPLATE,
-  PAIR_DEFINITIONS,
+  dbRowToPairRowConfig,
+  loadPairTemplateFromDb,
+  loadPairDefinitions,
   getPairDefinition,
 } from '@modules/edgefinder/services/pair-score/pair-template.config';
 
-describe('PAIR_TEMPLATE', () => {
-  it('has 15 rows (the full template incl. JPY-only Household Spending)', () => {
-    expect(PAIR_TEMPLATE).toHaveLength(15);
+beforeEach(() => {
+  fixtures.rows = [
+    {
+      displayName: 'GDP', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 1, isActive: true,
+      currencies: [
+        { currencyCode: 'AUD', indicatorCode: 'AU_GDP_QOQ' },
+        { currencyCode: 'EUR', indicatorCode: 'EU_GDP_QOQ' },
+        { currencyCode: 'GBP', indicatorCode: 'UK_GDP_MOM' },
+        { currencyCode: 'JPY', indicatorCode: 'JP_GDP_QOQ' },
+        { currencyCode: 'USD', indicatorCode: 'US_GDP_QOQ' },
+      ],
+    },
+    {
+      displayName: 'PCE', uiGroup: 'Inflation', treatment: 'USD_ONLY', rowOrder: 2, isActive: true,
+      currencies: [{ currencyCode: 'USD', indicatorCode: 'US_PCE_YOY' }],
+    },
+    {
+      displayName: 'Household Spending', uiGroup: 'Inflation', treatment: 'JPY_ONLY', rowOrder: 3, isActive: true,
+      currencies: [{ currencyCode: 'JPY', indicatorCode: 'JP_HSHLD_SPEND' }],
+    },
+    {
+      displayName: 'AU Employment Change', uiGroup: 'Jobs', treatment: 'AUD_ONLY', rowOrder: 4, isActive: true,
+      currencies: [{ currencyCode: 'AUD', indicatorCode: 'AU_EMPLOYMENT_CHANGE' }],
+    },
+    {
+      displayName: 'Parked Row', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 5, isActive: false,
+      currencies: [{ currencyCode: 'USD', indicatorCode: 'US_SOMETHING' }],
+    },
+  ];
+  fixtures.pairs = [
+    { code: 'AUDJPY', metadata: { base: 'AUD', quote: 'JPY' } },
+    { code: 'EURAUD', metadata: { base: 'EUR', quote: 'AUD' } },
+    { code: 'EURUSD', metadata: { base: 'EUR', quote: 'USD' } },
+  ];
+});
+
+describe('dbRowToPairRowConfig', () => {
+  it('maps currencies from rows, not from four fixed columns', () => {
+    const cfg = dbRowToPairRowConfig(fixtures.rows[0]);
+    expect(cfg.indicators).toEqual({
+      AUD: 'AU_GDP_QOQ',
+      EUR: 'EU_GDP_QOQ',
+      GBP: 'UK_GDP_MOM',
+      JPY: 'JP_GDP_QOQ',
+      USD: 'US_GDP_QOQ',
+    });
   });
 
-  it('GDP row has codes for all four currencies', () => {
-    const gdp = PAIR_TEMPLATE.find((r) => r.rowName === 'GDP');
-    expect(gdp).toBeDefined();
-    expect(gdp?.indicators.USD).toBe('US_GDP_QOQ');
-    expect(gdp?.indicators.EUR).toBe('EU_GDP_QOQ');
-    expect(gdp?.indicators.GBP).toBe('UK_GDP_MOM');
-    expect(gdp?.indicators.JPY).toBe('JP_GDP_QOQ');
+  it('supports a currency the code never names', () => {
+    const cfg = dbRowToPairRowConfig({
+      displayName: 'X', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 9, isActive: true,
+      currencies: [{ currencyCode: 'NZD', indicatorCode: 'NZ_GDP' }],
+    });
+    expect(cfg.indicators.NZD).toBe('NZ_GDP');
+    expect(cfg.requiresCurrency).toEqual(['NZD']);
   });
 
-  it('PPI is inverted for EUR and requires EUR in the pair', () => {
-    const ppi = PAIR_TEMPLATE.find((r) => r.rowName === 'PPI');
-    expect(ppi?.inverted?.EUR).toBe(true);
-    expect(ppi?.requiresCurrency).toEqual(['EUR']);
+  it('derives requiresCurrency from the row’s own mapped currencies', () => {
+    expect(dbRowToPairRowConfig(fixtures.rows[1]).requiresCurrency).toEqual(['USD']);
+    expect(dbRowToPairRowConfig(fixtures.rows[2]).requiresCurrency).toEqual(['JPY']);
   });
 
-  it('PCE/NFP/JOLTS/ADP/Jobless are USD-only and require USD', () => {
-    for (const name of ['PCE', 'NFP / Employment', 'JOLTS', 'ADP', 'Jobless Claims']) {
-      const row = PAIR_TEMPLATE.find((r) => r.rowName === name);
-      expect(row, `row ${name}`).toBeDefined();
-      expect(row?.requiresCurrency, `requiresCurrency for ${name}`).toEqual(['USD']);
-      expect(Object.keys(row?.indicators ?? {})).toEqual(['USD']);
-    }
+  it('ignores null indicator codes', () => {
+    const cfg = dbRowToPairRowConfig({
+      displayName: 'X', uiGroup: 'Growth', treatment: 'BILATERAL', rowOrder: 9, isActive: true,
+      currencies: [
+        { currencyCode: 'USD', indicatorCode: 'US_X' },
+        { currencyCode: 'AUD', indicatorCode: null },
+      ],
+    });
+    expect(cfg.indicators).toEqual({ USD: 'US_X' });
+    expect(cfg.requiresCurrency).toEqual(['USD']);
   });
 
-  it('Household Spending is JPY-only and requires JPY', () => {
-    const hs = PAIR_TEMPLATE.find((r) => r.rowName === 'Household Spending');
-    expect(hs?.requiresCurrency).toEqual(['JPY']);
-    expect(hs?.indicators.JPY).toBe('JP_HSHLD_SPEND');
-    expect(hs?.indicators.USD).toBeUndefined();
+  it('sets softExcludeWhenUnsupported only for the legacy USD_ONLY treatment', () => {
+    expect(dbRowToPairRowConfig(fixtures.rows[1]).softExcludeWhenUnsupported).toBe(true);
+    expect(dbRowToPairRowConfig(fixtures.rows[2]).softExcludeWhenUnsupported).toBe(false);
+    expect(dbRowToPairRowConfig(fixtures.rows[3]).softExcludeWhenUnsupported).toBe(false);
+    expect(dbRowToPairRowConfig(fixtures.rows[0]).softExcludeWhenUnsupported).toBe(false);
   });
 
-  it('Consumer Confidence covers all four currencies', () => {
-    const cc = PAIR_TEMPLATE.find((r) => r.rowName === 'Consumer Confidence');
-    expect(cc?.indicators.USD).toBe('US_CB_CONSCONF');
-    expect(cc?.indicators.EUR).toBe('EU_CCI');
-    expect(cc?.indicators.GBP).toBe('UK_GFK');
-    expect(cc?.indicators.JPY).toBe('JP_CONSCONF');
-  });
-
-  it('Unemployment is bilateral and NOT marked inverted (engine handles it)', () => {
-    const u = PAIR_TEMPLATE.find((r) => r.rowName === 'Unemployment');
-    expect(u?.indicators.USD).toBe('US_UNEMP');
-    expect(u?.indicators.EUR).toBe('EU_UNEMP');
-    expect(u?.indicators.GBP).toBe('UK_UNEMP');
-    expect(u?.indicators.JPY).toBe('JP_UNEMP');
-    expect(u?.inverted).toBeUndefined();
-    expect(u?.requiresCurrency).toBeUndefined();
-  });
-
-  it('Interest Rate row uses each central bank code', () => {
-    const ir = PAIR_TEMPLATE.find((r) => r.rowName === 'Interest Rate');
-    expect(ir?.indicators.USD).toBe('US_FED_RATE');
-    expect(ir?.indicators.EUR).toBe('EU_ECB_RATE');
-    expect(ir?.indicators.GBP).toBe('UK_BOE_RATE');
-    expect(ir?.indicators.JPY).toBe('JP_BOJ_RATE');
+  it('never marks a row inverted (PPI included)', () => {
+    expect(dbRowToPairRowConfig(fixtures.rows[0]).inverted).toBeUndefined();
   });
 });
 
-describe('PAIR_DEFINITIONS', () => {
-  it('declares exactly 5 FX pairs in spec order', () => {
-    expect(PAIR_DEFINITIONS.map((p) => p.code)).toEqual([
-      'EURUSD',
-      'GBPUSD',
-      'USDJPY',
-      'EURJPY',
-      'GBPJPY',
+describe('loadPairTemplateFromDb', () => {
+  it('returns only active rows, ordered by rowOrder', async () => {
+    const t = await loadPairTemplateFromDb();
+    expect(t.map((r) => r.rowName)).toEqual([
+      'GDP',
+      'PCE',
+      'Household Spending',
+      'AU Employment Change',
+    ]);
+  });
+});
+
+describe('loadPairDefinitions', () => {
+  it('derives the pair universe from the registry', async () => {
+    const defs = await loadPairDefinitions();
+    expect(defs).toEqual([
+      { code: 'AUDJPY', base: 'AUD', quote: 'JPY', isCarryPair: false },
+      { code: 'EURAUD', base: 'EUR', quote: 'AUD', isCarryPair: false },
+      { code: 'EURUSD', base: 'EUR', quote: 'USD', isCarryPair: false },
     ]);
   });
 
-  it('declares base/quote correctly for each pair', () => {
-    expect(PAIR_DEFINITIONS).toContainEqual({ code: 'EURUSD', base: 'EUR', quote: 'USD' });
-    expect(PAIR_DEFINITIONS).toContainEqual({ code: 'USDJPY', base: 'USD', quote: 'JPY' });
-    expect(PAIR_DEFINITIONS).toContainEqual({ code: 'GBPJPY', base: 'GBP', quote: 'JPY' });
+  it('picks up a newly registered pair with no code change', async () => {
+    fixtures.pairs.push({ code: 'GBPAUD', metadata: { base: 'GBP', quote: 'AUD' } });
+    const defs = await loadPairDefinitions();
+    expect(defs.map((d) => d.code)).toContain('GBPAUD');
+  });
+
+  it('throws rather than inferring base/quote by slicing the code', async () => {
+    fixtures.pairs.push({ code: 'NZDUSD', metadata: {} });
+    await expect(loadPairDefinitions()).rejects.toThrow(/missing base\/quote in metadata/);
+  });
+
+  it('throws when metadata is absent entirely', async () => {
+    fixtures.pairs.push({ code: 'NZDUSD', metadata: null });
+    await expect(loadPairDefinitions()).rejects.toThrow(/missing base\/quote in metadata/);
+  });
+
+  // Phase 5: isCarryPair is read from Asset.metadata.isCarryPair — the data
+  // property Override 5 (Carry Unwind) now derives its eligibility from,
+  // instead of a hand-maintained pair-code enumeration.
+  it('reads isCarryPair: true from metadata when present', async () => {
+    fixtures.pairs.push({ code: 'AUDJPY2', metadata: { base: 'AUD', quote: 'JPY', isCarryPair: true } });
+    const defs = await loadPairDefinitions();
+    expect(defs.find((d) => d.code === 'AUDJPY2')?.isCarryPair).toBe(true);
+  });
+
+  it('defaults isCarryPair to false when the metadata key is absent', async () => {
+    const defs = await loadPairDefinitions();
+    expect(defs.find((d) => d.code === 'EURUSD')?.isCarryPair).toBe(false);
   });
 });
 
 describe('getPairDefinition', () => {
-  it('returns the matching pair', () => {
-    expect(getPairDefinition('EURJPY')).toEqual({ code: 'EURJPY', base: 'EUR', quote: 'JPY' });
+  it('returns the matching pair', async () => {
+    await expect(getPairDefinition('EURAUD')).resolves.toEqual({
+      code: 'EURAUD',
+      base: 'EUR',
+      quote: 'AUD',
+      isCarryPair: false,
+    });
   });
-  it('returns null for unknown code', () => {
-    expect(getPairDefinition('XAUUSD')).toBeNull();
-    expect(getPairDefinition('NZDUSD')).toBeNull();
+
+  it('returns null for a code that is not a registered pair', async () => {
+    await expect(getPairDefinition('XAUUSD')).resolves.toBeNull();
+    await expect(getPairDefinition('NZDUSD')).resolves.toBeNull();
   });
 });

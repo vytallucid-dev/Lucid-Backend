@@ -1,19 +1,31 @@
 /**
- * EdgeFinder Phase 5 — pair-scoring template config.
+ * EdgeFinder pair-scoring template.
  *
- * Fixed indicator-row template per Spec v1 §7. Each row maps a logical
- * concept (GDP, CPI, ...) to its per-currency indicator code. The pair
- * scoring service consumes this to evaluate every (base, quote) pair as
- * `base_indicator_score − quote_indicator_score` per row, optionally with
- * per-currency inversion and per-pair inclusion rules.
+ * Each row maps a logical concept (GDP, CPI, ...) to a per-currency indicator
+ * code. The pair scoring service evaluates every (base, quote) pair as
+ * `base_indicator_score − quote_indicator_score` per row.
  *
- * The canonical source of truth is now the `pair_template_rows` DB table
- * (seeded via seed-edgefinder.ts). Use `loadPairTemplateFromDb()` at runtime
- * instead of the static `PAIR_TEMPLATE` array.
+ * PHASE 2 CUTOVER
+ * ---------------
+ * Both the template and the pair universe are now read from the database, and
+ * no currency or instrument is named in this file:
+ *
+ *   - Row → currency → indicator comes from `pair_template_row_currencies`
+ *     (currency is a ROW, not one of four literal columns).
+ *   - The pair list comes from the asset registry (assetClass = 'forex_pair'),
+ *     with base/quote read from the asset's own metadata.
+ *
+ * Adding an economy or an instrument is therefore a data insert.
  */
 import { prisma } from '@core/db/prisma';
+import { AppError } from '@core/middleware/error-handler';
 
-export type Currency = 'USD' | 'EUR' | 'GBP' | 'JPY';
+/**
+ * A currency code. Deliberately an open string type: the template supports any
+ * currency present in `pair_template_row_currencies`, and enumerating them in
+ * code is exactly the coupling Phase 2 removes.
+ */
+export type Currency = string;
 
 export type PairRowUiGroup =
   | 'Growth'
@@ -26,162 +38,141 @@ export interface PairRowConfig {
   rowName: string;
   uiGroup: PairRowUiGroup;
   /** Indicator code per currency. Absent entry = currency has no indicator for this row. */
-  indicators: Partial<Record<Currency, string>>;
+  indicators: Record<string, string>;
   /** If true for a currency, that side's score is negated before subtraction. */
-  inverted?: Partial<Record<Currency, boolean>>;
-  /** Row is only scored when one of these currencies is in the pair. */
+  inverted?: Record<string, boolean>;
+  /**
+   * The currencies this row actually supports, derived from the normalised
+   * table. The row applies to a pair when base or quote is one of them.
+   */
   requiresCurrency?: Currency[];
+  /**
+   * Behaviour when the row does NOT apply to a pair — the Phase 3 asymmetry,
+   * expressed as a property of the row rather than a list of row codes:
+   *
+   *   false → HARD exclude. The row is not part of that pair's template at all
+   *           (rowIncluded=false). This is the default for single-currency rows
+   *           such as Household Spending, Labor Cash Earnings, Tokyo Core CPI,
+   *           AU Employment Change and China Caixin.
+   *   true  → SOFT exclude. The row stays visible but is forced to score 0 —
+   *           the "dead" rows. This is the legacy carve-out for the five
+   *           USD-only rows (PCE, NFP, Jobless Claims, JOLTS, ADP).
+   *
+   * Because it is derived from the row's own `treatment` value, a future
+   * single-side row behaves correctly with no code change.
+   */
+  softExcludeWhenUnsupported: boolean;
 }
 
-export const PAIR_TEMPLATE: PairRowConfig[] = [
-  {
-    rowName: 'GDP',
-    uiGroup: 'Growth',
-    indicators: { USD: 'US_GDP_QOQ', EUR: 'EU_GDP_QOQ', GBP: 'UK_GDP_MOM', JPY: 'JP_GDP_QOQ' },
-  },
-  {
-    rowName: 'Manufacturing PMI',
-    uiGroup: 'Growth',
-    indicators: { USD: 'US_ISM_MFG', EUR: 'EU_MFG_PMI', GBP: 'UK_MFG_PMI', JPY: 'JP_MFG_PMI' },
-  },
-  {
-    rowName: 'Services PMI',
-    uiGroup: 'Growth',
-    indicators: { USD: 'US_ISM_SVC', EUR: 'EU_SVC_PMI', GBP: 'UK_SVC_PMI', JPY: 'JP_SVC_PMI' },
-  },
-  {
-    rowName: 'Retail Sales',
-    uiGroup: 'Growth',
-    indicators: { USD: 'US_RETAIL_MOM', EUR: 'EU_RETAIL_MOM', GBP: 'UK_RETAIL_MOM', JPY: 'JP_RETAIL_YOY' },
-  },
-  {
-    rowName: 'Consumer Confidence',
-    uiGroup: 'Sentiment',
-    indicators: { USD: 'US_CB_CONSCONF', EUR: 'EU_CCI', GBP: 'UK_GFK', JPY: 'JP_CONSCONF' },
-  },
-  {
-    rowName: 'CPI',
-    uiGroup: 'Inflation',
-    indicators: { USD: 'US_CPI_YOY', EUR: 'EU_CPI_YOY', GBP: 'UK_CPI_YOY', JPY: 'JP_CPI_YOY' },
-  },
-  {
-    rowName: 'PPI',
-    uiGroup: 'Inflation',
-    indicators: { USD: 'US_PPI_MOM', EUR: 'EU_PPI_MOM', GBP: 'UK_PPI_MOM', JPY: 'JP_PPI_YOY' },
-    inverted: { EUR: true },
-    requiresCurrency: ['EUR'],
-  },
-  {
-    rowName: 'PCE',
-    uiGroup: 'Inflation',
-    indicators: { USD: 'US_PCE_YOY' },
-    requiresCurrency: ['USD'],
-  },
-  {
-    rowName: 'Household Spending',
-    uiGroup: 'Inflation',
-    indicators: { JPY: 'JP_HSHLD_SPEND' },
-    requiresCurrency: ['JPY'],
-  },
-  {
-    rowName: 'NFP / Employment',
-    uiGroup: 'Jobs',
-    indicators: { USD: 'US_NFP' },
-    requiresCurrency: ['USD'],
-  },
-  {
-    rowName: 'Unemployment',
-    uiGroup: 'Jobs',
-    indicators: { USD: 'US_UNEMP', EUR: 'EU_UNEMP', GBP: 'UK_UNEMP', JPY: 'JP_UNEMP' },
-    // Unemployment uses the inverted scoring handler (lower = better for currency).
-    // The engine already returns lower-is-positive scores, so do NOT double-invert here.
-  },
-  {
-    rowName: 'Jobless Claims',
-    uiGroup: 'Jobs',
-    indicators: { USD: 'US_JOBLESS_CLAIMS' },
-    requiresCurrency: ['USD'],
-  },
-  {
-    rowName: 'JOLTS',
-    uiGroup: 'Jobs',
-    indicators: { USD: 'US_JOLTS' },
-    requiresCurrency: ['USD'],
-  },
-  {
-    rowName: 'ADP',
-    uiGroup: 'Jobs',
-    indicators: { USD: 'US_ADP' },
-    requiresCurrency: ['USD'],
-  },
-  {
-    rowName: 'Interest Rate',
-    uiGroup: 'Rates',
-    indicators: { USD: 'US_FED_RATE', EUR: 'EU_ECB_RATE', GBP: 'UK_BOE_RATE', JPY: 'JP_BOJ_RATE' },
-  },
-];
+/**
+ * Treatments whose rows stay VISIBLE scoring 0 when they do not apply, instead
+ * of being dropped from the pair's template.
+ *
+ * This is the historical carve-out for the five USD-only rows, which have
+ * always been rendered as zero rows in non-USD pairs. Every other
+ * single-currency treatment (JPY_ONLY, AUD_ONLY, and any future one) defaults
+ * to hard exclusion, matching the Household Spending precedent.
+ */
+const SOFT_EXCLUDE_TREATMENTS: ReadonlySet<string> = new Set(['USD_ONLY']);
 
 export interface PairDefinition {
   code: string;
   base: Currency;
   quote: Currency;
-}
-
-export const PAIR_DEFINITIONS: ReadonlyArray<PairDefinition> = [
-  { code: 'EURUSD', base: 'EUR', quote: 'USD' },
-  { code: 'GBPUSD', base: 'GBP', quote: 'USD' },
-  { code: 'USDJPY', base: 'USD', quote: 'JPY' },
-  { code: 'EURJPY', base: 'EUR', quote: 'JPY' },
-  { code: 'GBPJPY', base: 'GBP', quote: 'JPY' },
-] as const;
-
-export function getPairDefinition(pairCode: string): PairDefinition | null {
-  return PAIR_DEFINITIONS.find((p) => p.code === pairCode) ?? null;
+  /**
+   * Phase 5: whether this pair is a JPY carry-funding pair for Override 5
+   * (Carry Unwind) — a higher-yielding currency funded by JPY. Sourced from
+   * Asset.metadata.isCarryPair, a data property (not derived from a rate
+   * differential — see pair-compass-overrides.ts for why). Defaults to false
+   * when absent.
+   */
+  isCarryPair: boolean;
 }
 
 // ─── DB-driven template loading ───────────────────────────────────────────────
 
-function dbRowToPairRowConfig(row: {
+interface TemplateRowWithCurrencies {
   displayName: string;
   uiGroup: string;
   treatment: string;
-  usIndicatorCode: string | null;
-  eurIndicatorCode: string | null;
-  gbpIndicatorCode: string | null;
-  jpyIndicatorCode: string | null;
-}): PairRowConfig {
-  const indicators: Partial<Record<Currency, string>> = {};
-  if (row.usIndicatorCode) indicators.USD = row.usIndicatorCode;
-  if (row.eurIndicatorCode) indicators.EUR = row.eurIndicatorCode;
-  if (row.gbpIndicatorCode) indicators.GBP = row.gbpIndicatorCode;
-  if (row.jpyIndicatorCode) indicators.JPY = row.jpyIndicatorCode;
+  currencies: Array<{ currencyCode: string; indicatorCode: string | null }>;
+}
 
-  let requiresCurrency: Currency[] | undefined;
-  if (row.treatment === 'USD_ONLY') requiresCurrency = ['USD'];
-  else if (row.treatment === 'JPY_ONLY') requiresCurrency = ['JPY'];
-  // BILATERAL and RATES_BILATERAL have no requiresCurrency constraint.
+export function dbRowToPairRowConfig(row: TemplateRowWithCurrencies): PairRowConfig {
+  const indicators: Record<string, string> = {};
+  for (const c of row.currencies) {
+    if (c.indicatorCode) indicators[c.currencyCode] = c.indicatorCode;
+  }
+
+  // The row's supported currencies ARE its requirement. No currency literal.
+  const supported = Object.keys(indicators);
 
   return {
     rowName: row.displayName,
     uiGroup: row.uiGroup as PairRowUiGroup,
     indicators,
-    requiresCurrency,
-    // No `inverted` field: PPI is correctly BILATERAL in the DB (no EUR inversion).
+    requiresCurrency: supported.length > 0 ? supported : undefined,
+    softExcludeWhenUnsupported: SOFT_EXCLUDE_TREATMENTS.has(row.treatment),
+    // No `inverted` field: every currency's PPI is NORMAL, including EUR.
   };
 }
 
 /**
- * Load active pair-template rows from the database ordered by rowOrder.
- *
- * This is the canonical runtime replacement for the static PAIR_TEMPLATE array.
- * The DB is the single source of truth for indicator codes and treatment rules,
- * so any seed change (e.g. fixing PPI to BILATERAL) is automatically picked up
- * without redeploying application code.
+ * Load active pair-template rows from the database ordered by rowOrder,
+ * resolving each row's currencies from `pair_template_row_currencies`.
  */
 export async function loadPairTemplateFromDb(): Promise<PairRowConfig[]> {
   const rows = await prisma.pairTemplateRow.findMany({
     where: { isActive: true },
     orderBy: { rowOrder: 'asc' },
+    include: {
+      currencies: {
+        orderBy: { currencyCode: 'asc' },
+        select: { currencyCode: true, indicatorCode: true },
+      },
+    },
   });
   return rows.map(dbRowToPairRowConfig);
+}
+
+// ─── Registry-driven pair definitions ─────────────────────────────────────────
+
+/**
+ * The pair universe, derived from the asset registry.
+ *
+ * base/quote are read from the asset's stored metadata. They are NEVER inferred
+ * by slicing the pair code: a three-character split is wrong for any non-3+3
+ * symbol, and a wrong parse silently inverts the sign of the pair's entire
+ * score rather than failing. A pair missing that metadata throws.
+ */
+export async function loadPairDefinitions(): Promise<PairDefinition[]> {
+  const assets = await prisma.asset.findMany({
+    where: {
+      isActive: true,
+      assetClass: 'forex_pair',
+      toolScope: { has: 'edgefinder' },
+    },
+    select: { code: true, metadata: true },
+    orderBy: { code: 'asc' },
+  });
+
+  return assets.map((a) => {
+    const meta = (a.metadata ?? {}) as Record<string, unknown>;
+    const base = typeof meta.base === 'string' ? meta.base : null;
+    const quote = typeof meta.quote === 'string' ? meta.quote : null;
+    if (!base || !quote) {
+      throw new AppError(
+        500,
+        `Pair asset ${a.code} is missing base/quote in metadata — refusing to infer them from the code, because a wrong parse silently inverts the pair's entire score.`,
+        'PAIR_METADATA_INCOMPLETE',
+      );
+    }
+    const isCarryPair = meta.isCarryPair === true;
+    return { code: a.code, base, quote, isCarryPair };
+  });
+}
+
+export async function getPairDefinition(pairCode: string): Promise<PairDefinition | null> {
+  const defs = await loadPairDefinitions();
+  return defs.find((p) => p.code === pairCode) ?? null;
 }

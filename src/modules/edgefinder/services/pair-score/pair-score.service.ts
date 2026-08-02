@@ -347,7 +347,7 @@ export async function assemblePairScore(
   pairCode: string,
   scoreDate: Date,
 ): Promise<AssemblePairScoreResult> {
-  const pairDef = getPairDefinition(pairCode);
+  const pairDef = await getPairDefinition(pairCode);
   if (!pairDef) {
     throw new AppError(404, `Unknown pair code: ${pairCode}`, 'UNKNOWN_PAIR');
   }
@@ -433,6 +433,8 @@ export async function assemblePairScore(
 
   const overrides = computePairCompassOverrides({
     pairCode,
+    quoteCurrency: pairDef.quote,
+    isCarryPair: pairDef.isCarryPair,
     regimePathRiskOff,
     override5Active,
     shockBActive,

@@ -11,6 +11,15 @@ vi.mock('@modules/edgefinder/services/pair-score/pair-score.service', () => ({
   assemblePairScore: vi.fn(),
 }));
 
+// Phase 2: the pair universe is derived from the asset registry rather than a
+// hardcoded PAIR_DEFINITIONS array, so the orchestrator calls into the config
+// module. Mocked to keep the test hermetic.
+const registryPairs: Array<{ code: string; base: string; quote: string }> = [];
+
+vi.mock('@modules/edgefinder/services/pair-score/pair-template.config', () => ({
+  loadPairDefinitions: vi.fn(async () => registryPairs),
+}));
+
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import { assemblePairScore } from '@modules/edgefinder/services/pair-score/pair-score.service';
 import { runPairScoreOrchestrator } from '@modules/edgefinder/services/pair-score/pair-score-orchestrator.service';
@@ -23,6 +32,14 @@ const DATE = new Date(Date.UTC(2026, 4, 19));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  registryPairs.length = 0;
+  registryPairs.push(
+    { code: 'EURUSD', base: 'EUR', quote: 'USD' },
+    { code: 'GBPUSD', base: 'GBP', quote: 'USD' },
+    { code: 'USDJPY', base: 'USD', quote: 'JPY' },
+    { code: 'EURJPY', base: 'EUR', quote: 'JPY' },
+    { code: 'GBPJPY', base: 'GBP', quote: 'JPY' },
+  );
   mockedStart.mockResolvedValue({ id: 'log-1' });
   mockedComplete.mockResolvedValue(undefined);
   mockedAssemble.mockResolvedValue({
@@ -34,6 +51,13 @@ beforeEach(() => {
 });
 
 describe('runPairScoreOrchestrator', () => {
+  it('picks up a newly registered pair with no code change', async () => {
+    registryPairs.push({ code: 'AUDUSD', base: 'AUD', quote: 'USD' });
+    const r = await runPairScoreOrchestrator('manual', null, DATE);
+    expect(r.pairsSucceeded).toContain('AUDUSD');
+    expect(mockedAssemble).toHaveBeenCalledTimes(6);
+  });
+
   it('runs all 5 pairs and returns success when all succeed', async () => {
     const r = await runPairScoreOrchestrator('manual', null, DATE);
     expect(r.status).toBe('success');

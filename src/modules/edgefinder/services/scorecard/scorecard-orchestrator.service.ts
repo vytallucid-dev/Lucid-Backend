@@ -1,3 +1,4 @@
+import { prisma } from '@core/db/prisma';
 import { logger } from '@core/utils/logger';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import { assembleAssetScorecard } from './asset-scorecard.service';
@@ -5,10 +6,30 @@ import { assembleAssetScorecard } from './asset-scorecard.service';
 const JOB_NAME = 'edgefinder_scorecard_assembly';
 
 /**
- * Assets in scope for Phase 4+7C. SPY and NAS100 are seeded with
- * isActive=false; pair assets (EURUSD, etc.) are Phase 5.
+ * Phase 2: the scorecard universe is derived from the asset registry, not a
+ * hardcoded list. An asset is in scope when it is active, in EdgeFinder's tool
+ * scope, and has at least one asset_indicator_map row.
+ *
+ * Consequences of those three filters, all intended:
+ *  - SPY / NAS100 / US30 are mapped but isActive=false → excluded until Phase 4.
+ *  - DXY is active and EdgeFinder-scoped but has no map rows (it is a Compass
+ *    input, not a scored asset) → excluded.
+ *  - FX pairs have no map rows → excluded; they are the pair orchestrator's job.
+ *
+ * Ordered by code so job output is stable run to run.
  */
-const ASSET_CODES: ReadonlyArray<string> = ['USD', 'EUR', 'GBP', 'JPY', 'XAUUSD'];
+async function resolveScorecardAssetCodes(): Promise<string[]> {
+  const assets = await prisma.asset.findMany({
+    where: {
+      isActive: true,
+      toolScope: { has: 'edgefinder' },
+      indicatorMaps: { some: {} },
+    },
+    select: { code: true },
+    orderBy: { code: 'asc' },
+  });
+  return assets.map((a) => a.code);
+}
 
 export interface RunScorecardOrchestratorResult {
   logId: string;
@@ -44,7 +65,13 @@ export async function runScorecardOrchestrator(
   const assetsSucceeded: string[] = [];
   const assetsFailed: Array<{ assetCode: string; error: string }> = [];
 
-  for (const assetCode of ASSET_CODES) {
+  const assetCodes = await resolveScorecardAssetCodes();
+  logger.info(
+    { jobName: JOB_NAME, observationDate: dateLabel, assetCodes },
+    'EdgeFinder scorecard universe resolved from registry',
+  );
+
+  for (const assetCode of assetCodes) {
     try {
       await assembleAssetScorecard(assetCode, observationDate);
       assetsSucceeded.push(assetCode);

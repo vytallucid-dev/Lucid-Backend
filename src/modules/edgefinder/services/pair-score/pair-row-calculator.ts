@@ -44,29 +44,31 @@ interface EvaluatePairRowInput {
 }
 
 /**
- * Rows that are hard-excluded from a pair's template when their required
- * currency is absent. These rows are not part of the pair's template at all
- * (rowIncluded=false). All other rows with `requiresCurrency` are kept in
- * the template but force-scored to 0 with an explanatory note when the
- * required currency is absent.
- *
- * - Household Spending is JPY-specific and only appears in JPY pairs.
- * - PPI stays in every pair's template per Rule B (scores 0 in non-EUR pairs).
- * - USD-only rows (PCE, NFP, JOLTS, ADP, Jobless Claims) stay in every pair's
- *   template; in non-USD pairs both sides are absent so the row scores 0
- *   naturally.
- */
-const HARD_EXCLUDE_WHEN_REQUIREMENT_UNSATISFIED = new Set(['Household Spending']);
-
-/**
  * Evaluate one pair-template row given the two sides' indicator snapshots.
  *
- * - `requiresCurrency` filter:
- *     • If the required currency is in the pair → row scores normally.
- *     • If absent AND row name is in HARD_EXCLUDE_WHEN_REQUIREMENT_UNSATISFIED
- *       → rowIncluded=false (row is not part of this pair's template).
- *     • If absent otherwise → rowIncluded=true, pairScore forced to 0 with a
- *       note (e.g., PPI in non-EUR pairs, USD-only rows in EURJPY/GBPJPY).
+ * - Applicability:
+ *     • Single-currency rows (`requiresCurrency.length === 1`, e.g. the
+ *       USD-only PCE/NFP-style rows) apply when EITHER side is the required
+ *       currency — these are intentionally one-sided injections of a single
+ *       currency's data into any pair containing it.
+ *     • Multi-currency ("bilateral") rows (`requiresCurrency.length > 1`)
+ *       require BOTH sides to be in `requiresCurrency`. Every such row
+ *       historically had full coverage across all supported currencies, so
+ *       this was equivalent to the single-currency OR check — until Phase 6
+ *       retired AUD's Retail Sales cell, leaving RETAIL mapped for only 4 of
+ *       5 currencies. Under OR semantics that row stayed included for every
+ *       AUD pair (since the non-AUD leg still satisfied the check) and
+ *       silently degraded into a one-sided contribution instead of being
+ *       excluded. AND semantics correctly exclude it for AUD pairs while
+ *       remaining a no-op for every fully-covered bilateral row.
+ * - When a row does NOT apply, the row's own `softExcludeWhenUnsupported`
+ *   property decides what happens. This replaced a hardcoded row-name list, so
+ *   a new single-side row behaves correctly without a code change:
+ *     • false → rowIncluded=false. The row is not part of this pair's template
+ *       (Household Spending, Labor Cash Earnings, Tokyo Core CPI,
+ *       AU Employment Change, China Caixin).
+ *     • true  → rowIncluded=true with pairScore forced to 0 and a note — the
+ *       legacy "dead" USD-only rows in pairs containing no USD.
  * - Per-currency inversion is applied to each side independently.
  * - Missing config entry (no indicator for a currency) → that side = 0,
  *   outcome 'absent'.
@@ -84,8 +86,9 @@ export function evaluatePairRow(input: EvaluatePairRowInput): PairRowResult {
   const requires = config.requiresCurrency;
   const requirementSatisfied =
     !requires ||
-    requires.includes(baseCurrency) ||
-    requires.includes(quoteCurrency);
+    (requires.length === 1
+      ? requires.includes(baseCurrency) || requires.includes(quoteCurrency)
+      : requires.includes(baseCurrency) && requires.includes(quoteCurrency));
 
   const baseSide: PairRowSideBreakdown = {
     code: baseIndicatorCode,
@@ -115,7 +118,7 @@ export function evaluatePairRow(input: EvaluatePairRowInput): PairRowResult {
 
   if (!requirementSatisfied) {
     const requiredLabel = requires?.join('/') ?? '';
-    if (HARD_EXCLUDE_WHEN_REQUIREMENT_UNSATISFIED.has(config.rowName)) {
+    if (!config.softExcludeWhenUnsupported) {
       return {
         rowName: config.rowName,
         uiGroup: config.uiGroup,

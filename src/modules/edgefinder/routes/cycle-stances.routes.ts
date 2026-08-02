@@ -7,7 +7,7 @@ export const cycleStancesRouter = Router();
 
 // Auth is enforced upstream at the /api/admin mount (requireAuth + requireRole('admin')).
 
-const VALID_CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY'] as const;
+const VALID_CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'AUD'] as const;
 const VALID_STANCES = ['CUTTING', 'NEUTRAL', 'HIKING'] as const;
 // Phase 6 (Addendum 8B): the Fed constraint for the gold override gate. A
 // global, effective-dated judgment value stored on the USD cycle-stance rows.

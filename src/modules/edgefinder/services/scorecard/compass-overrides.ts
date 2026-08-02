@@ -74,9 +74,15 @@ const US_JOBS_CODES = new Set([
  * The overrides assume the caller has already applied the Gold direction flip
  * to baseScore values (so for Gold, a CPI beat shows up as -1 here, and
  * Override 2 flips it back to +1 via a +2 adjustment).
+ *
+ * Phase 4: `assetClass` is the asset's Asset.assetClass ('currency',
+ * 'commodity', 'forex_pair', 'index'), threaded through by the caller from
+ * asset-indicator-resolver.ts. Override 1 derives its eligibility from this
+ * rather than an enumerated code list — see Override 1 below.
  */
 export function computeCompassOverridesForAsset(
   assetCode: string,
+  assetClass: string,
   gate: OverrideGateContext,
   indicatorScores: IndicatorScoreInput[],
 ): OverrideAdjustment {
@@ -138,10 +144,27 @@ export function computeCompassOverridesForAsset(
   }
 
   // Override 1 (Bad-News-Good-News): UNGATED — fires on the regime path only.
-  if ((assetCode === 'SPY' || assetCode === 'NAS100') && gate.regimePathRiskOff) {
+  // Phase 4: derives eligibility from assetClass === 'index' rather than an
+  // enumerated SPY/NAS100 code list, so a newly activated index (US30) is
+  // covered automatically and no future index needs a code change here.
+  // Trigger condition, indicators touched and magnitude are otherwise unchanged.
+  //
+  // Phase 5: US_UNEMP is excluded here, at the read site — NOT removed from
+  // US_JOBS_CODES, which is shared with Override 4 (USD) above, where UNEMP's
+  // currency polarity (+1, uninverted) composes correctly and must not change.
+  // US_UNEMP is `inverted` at the rule layer with -1 index polarity, so a
+  // composed -1 means unemployment printed BELOW forecast — a STRONG labour
+  // print, not a miss. Override 1's premise is "weak jobs data is a dovish
+  // catalyst"; doubling a strong UNEMP print into +2 bullish applies that
+  // premise backwards. The other four members (NFP/ADP/JOLTS/JOBLESS_CLAIMS)
+  // are unaffected — JOBLESS_CLAIMS in particular is also `inverted` but
+  // carries +1 index polarity, so its composed sign already matches the
+  // override's premise and it was never part of this defect.
+  if (assetClass === 'index' && gate.regimePathRiskOff) {
     const affected: string[] = [];
     let adj = 0;
     for (const ind of indicatorScores) {
+      if (ind.indicatorCode === 'US_UNEMP') continue;
       if (US_JOBS_CODES.has(ind.indicatorCode) && ind.baseScore === -1) {
         adj += 2;
         affected.push(ind.indicatorCode);

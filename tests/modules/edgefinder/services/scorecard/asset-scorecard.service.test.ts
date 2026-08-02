@@ -82,6 +82,9 @@ type ResolvedIndicatorMock = {
   uiGroup: string;
   category: 'Growth' | 'Inflation' | 'Jobs' | 'Sentiment' | 'Rates' | 'COT' | 'Other';
   isCot: boolean;
+  /** Phase 2: asset-level sign. `final = raw * polarity`. */
+  polarity: 1 | -1;
+  /** Legacy derived field, still emitted into indicatorBreakdown. */
   flipScoreForGold: boolean;
 };
 
@@ -90,13 +93,16 @@ function ind(
   category: ResolvedIndicatorMock['category'] = 'Growth',
   opts: { isCot?: boolean; flip?: boolean } = {},
 ): ResolvedIndicatorMock {
+  // `flip: true` is the Gold case, which Phase 2 expresses as polarity -1.
+  const polarity: 1 | -1 = opts.flip ? -1 : 1;
   return {
     indicatorId: `i-${code}`,
     indicatorCode: code,
     uiGroup: opts.isCot ? 'COT' : category,
     category: opts.isCot ? 'COT' : category,
     isCot: opts.isCot ?? false,
-    flipScoreForGold: opts.flip ?? false,
+    polarity,
+    flipScoreForGold: polarity === -1,
   };
 }
 

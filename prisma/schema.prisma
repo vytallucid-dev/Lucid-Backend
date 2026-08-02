@@ -124,6 +124,7 @@ model Asset {
   edgefinderScorecards EdgefinderScorecard[]
   edgefinderPairScores EdgefinderPairScore[]
   cotData              CotData[]
+  indicatorMaps        AssetIndicatorMap[]
 
   @@index([assetClass])
   @@index([toolScope], type: Gin)
@@ -152,6 +153,7 @@ model Indicator {
   scoringRules ScoringRule[]
   dataPoints   DataPoint[]
   scores       Score[]
+  assetMaps    AssetIndicatorMap[]
 
   @@index([tool, isActive])
   @@index([dataSource, frequency])
@@ -476,8 +478,69 @@ model PairTemplateRow {
   rowOrder         Int     @map("row_order")
   isActive         Boolean @default(true) @map("is_active")
 
+  currencies PairTemplateRowCurrency[]
+
   @@index([rowOrder])
   @@map("pair_template_rows")
+}
+
+// Phase 1 (AUD expansion): normalised replacement for PairTemplateRow's four
+// hardcoded currency columns (us/eur/gbp/jpy_indicator_code). Currency becomes a
+// ROW, not a column, so a 5th+ economy is a data insert instead of an ALTER TABLE.
+//
+// indicatorCode is nullable on purpose: a currency can legitimately have no
+// equivalent for a given template row (e.g. AUD has no PCE counterpart), and the
+// pair-row calculator needs to distinguish "mapped to nothing" from "not mapped".
+//
+// The four legacy columns on PairTemplateRow remain in place and authoritative
+// until a later phase switches loadPairTemplateFromDb() over to this table.
+model PairTemplateRowCurrency {
+  id            String   @id @default(uuid())
+  templateRowId String   @map("template_row_id")
+  currencyCode  String   @map("currency_code") @db.VarChar(3)
+  indicatorCode String?  @map("indicator_code") @db.VarChar(50)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  templateRow PairTemplateRow @relation(fields: [templateRowId], references: [id], onDelete: Cascade)
+
+  @@unique([templateRowId, currencyCode])
+  @@index([currencyCode])
+  @@index([indicatorCode])
+  @@map("pair_template_row_currencies")
+}
+
+// Phase 1 (AUD expansion): data-driven replacement for the two hardcoded
+// structures in asset-indicator-resolver.ts — COUNTRY_BY_ASSET (membership by
+// country string) and flipScoreForGold (a single boolean negating every
+// indicator for Gold).
+//
+// polarity replaces the boolean because indices need MIXED signs: a growth beat
+// is bullish for both USD and equities (+1), while an inflation beat is bullish
+// USD but bearish equities (-1). One global flip cannot express that.
+//
+// Composition is: final = ruleLayerScore * polarity. The rule layer already
+// encodes indicator-level direction (e.g. `inverted` for unemployment), so
+// polarity is strictly the asset-level view on top of it.
+//
+// COUNTRY_BY_ASSET and flipScoreForGold remain authoritative until a later
+// phase switches resolveAssetIndicators() over to this table.
+model AssetIndicatorMap {
+  id          String   @id @default(uuid())
+  assetId     String   @map("asset_id")
+  indicatorId String   @map("indicator_id")
+  polarity    Int      @default(1) @db.SmallInt
+  isCot       Boolean  @default(false) @map("is_cot")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  asset     Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  indicator Indicator @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, indicatorId])
+  @@index([assetId])
+  @@index([indicatorId])
+  @@map("asset_indicator_map")
 }
 
 model CompassInput {
