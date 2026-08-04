@@ -4,7 +4,7 @@ import { AppError } from '@core/middleware/error-handler';
 import { logger } from '@core/utils/logger';
 import { dataPointsRepository } from '@core/repositories/data-points.repository';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
-import { getPriorRateLevel } from './rate-decision.helpers';
+import { getPriorRateLevel, levelToBpsChange } from './rate-decision.helpers';
 
 // Per-indicator log name (mirrors the NIFTY manual-input convention
 // `manual_input_<code>`) so each indicator's detail page can filter its own
@@ -75,6 +75,12 @@ export interface ManualEntryResult {
   value: number;
   isRateDecision: boolean;
   rateLevel?: number;
+  // Change 2 (rate decision scores surprise) — Step 1. Only set for rate
+  // decisions when a forecast was submitted: the EXPECTED absolute rate
+  // level as entered (same unit as `rateLevel`/`actual`), for display. The
+  // stored/scored `forecastValue` below is the bps-change conversion of
+  // this value — see levelToBpsChange.
+  rateExpectedLevel?: number;
   forecastValue: number | null;
   previousValue: number | null;
   notes: string | null;
@@ -169,9 +175,18 @@ export async function ingestManualEntry(
       const firstRelease = priorRate === null;
       const bpsChange = firstRelease ? 0 : (input.actual - priorRate) * 100;
 
+      // Change 2 (rate decision scores surprise) — Step 1. `input.forecast` is
+      // the expected absolute rate level, entered the same way `actual` is.
+      // Converted to a bps-change delta against the SAME priorRate as `value`
+      // uses, so the two land in the same unit and the handler can diff them
+      // directly. No prior rate (first release) → no baseline to convert
+      // against → forecastBpsChange stays null, same as omitting a forecast.
+      const forecastBpsChange = levelToBpsChange(input.forecast, priorRate);
+
       const sourceMetadata: Prisma.InputJsonObject = {
         manualEntry: true,
         rate_level: input.actual,
+        ...(input.forecast !== null ? { expected_rate_level: input.forecast } : {}),
         ...(firstRelease ? { first_release: true } : {}),
         notes: input.notes ?? null,
         enteredAt,
@@ -182,7 +197,7 @@ export async function ingestManualEntry(
         indicatorId: indicator.id,
         observationDate: input.observationDate,
         value: bpsChange,
-        forecastValue: null,
+        forecastValue: forecastBpsChange,
         previousValue: null,
         source: 'manual',
         sourceMetadata,
@@ -205,6 +220,8 @@ export async function ingestManualEntry(
           rateLevel: input.actual,
           priorRate,
           bpsChange,
+          expectedRateLevel: input.forecast,
+          forecastBpsChange,
           firstRelease,
           action: upsert.action,
         },
@@ -219,7 +236,8 @@ export async function ingestManualEntry(
         value: bpsChange,
         isRateDecision: true,
         rateLevel: input.actual,
-        forecastValue: null,
+        ...(input.forecast !== null ? { rateExpectedLevel: input.forecast } : {}),
+        forecastValue: forecastBpsChange,
         previousValue: null,
         notes: input.notes,
       };

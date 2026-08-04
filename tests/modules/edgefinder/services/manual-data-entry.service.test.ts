@@ -161,7 +161,7 @@ describe('ingestManualEntry', () => {
       });
   });
 
-  it('rate decision, first release: bps_change=0, first_release=true, rate_level stored', async () => {
+  it('rate decision, first release: bps_change=0, first_release=true, rate_level stored, forecastValue null (no baseline)', async () => {
     mockedFindUnique.mockResolvedValue({
       id: 'ind-fed',
       code: 'US_FED_RATE',
@@ -178,6 +178,10 @@ describe('ingestManualEntry', () => {
     expect(result.isRateDecision).toBe(true);
     expect(result.rateLevel).toBe(5.0);
     expect(result.value).toBe(0);
+    // First release → no prior level to convert the submitted forecast (3.4,
+    // from baseInput()'s default) against, so forecastValue stays null even
+    // though a forecast was submitted.
+    expect(result.forecastValue).toBeNull();
 
     const call = mockedUpsert.mock.calls[0][0];
     expect(call.value).toBe(0);
@@ -226,6 +230,75 @@ describe('ingestManualEntry', () => {
     );
 
     expect(result.value).toBeCloseTo(-25, 6);
+  });
+
+  // ── Change 2 Step 1: expected rate level → bps-change forecastValue ────────
+  describe('rate decision forecast (expected rate) persistence', () => {
+    it('expected rate submitted with a prior level → forecastValue stored as a matching bps delta', async () => {
+      mockedFindUnique.mockResolvedValue({
+        id: 'ind-fed',
+        code: 'US_FED_RATE',
+        name: 'US Fed Funds Rate',
+        dataSource: 'forex_factory',
+      });
+      mockedFindFirst.mockResolvedValue({ sourceMetadata: { rate_level: 5.0 } });
+      mockedUpsert.mockResolvedValue({ action: 'inserted', dataPoint: { id: 'dp-fed-4' } });
+
+      // Actual 5.25 (hike to 25bp actual), expected 5.25 (an "as expected" hike) —
+      // same unit (absolute level) the admin types for `actual`.
+      const result = await ingestManualEntry(
+        baseInput({ indicatorCode: 'US_FED_RATE', actual: 5.25, forecast: 5.25 }),
+      );
+
+      expect(result.value).toBeCloseTo(25, 6);
+      expect(result.forecastValue).toBeCloseTo(25, 6);
+      expect(result.rateExpectedLevel).toBe(5.25);
+
+      const call = mockedUpsert.mock.calls[0][0];
+      expect(call.forecastValue).toBeCloseTo(25, 6);
+      const meta = call.sourceMetadata as Record<string, unknown>;
+      expect(meta.expected_rate_level).toBe(5.25);
+    });
+
+    it('a surprise hike (actual 5.50, expected 5.25) stores forecastValue=25 vs value=50 — different bps, same unit', async () => {
+      mockedFindUnique.mockResolvedValue({
+        id: 'ind-fed',
+        code: 'US_FED_RATE',
+        name: 'US Fed Funds Rate',
+        dataSource: 'forex_factory',
+      });
+      mockedFindFirst.mockResolvedValue({ sourceMetadata: { rate_level: 5.0 } });
+      mockedUpsert.mockResolvedValue({ action: 'inserted', dataPoint: { id: 'dp-fed-5' } });
+
+      const result = await ingestManualEntry(
+        baseInput({ indicatorCode: 'US_FED_RATE', actual: 5.5, forecast: 5.25 }),
+      );
+
+      expect(result.value).toBeCloseTo(50, 6);
+      expect(result.forecastValue).toBeCloseTo(25, 6);
+    });
+
+    it('no forecast submitted (null) → forecastValue stays null, no expected_rate_level in metadata', async () => {
+      mockedFindUnique.mockResolvedValue({
+        id: 'ind-fed',
+        code: 'US_FED_RATE',
+        name: 'US Fed Funds Rate',
+        dataSource: 'forex_factory',
+      });
+      mockedFindFirst.mockResolvedValue({ sourceMetadata: { rate_level: 5.0 } });
+      mockedUpsert.mockResolvedValue({ action: 'inserted', dataPoint: { id: 'dp-fed-6' } });
+
+      const result = await ingestManualEntry(
+        baseInput({ indicatorCode: 'US_FED_RATE', actual: 5.25, forecast: null }),
+      );
+
+      expect(result.forecastValue).toBeNull();
+      expect(result.rateExpectedLevel).toBeUndefined();
+      const call = mockedUpsert.mock.calls[0][0];
+      expect(call.forecastValue).toBeNull();
+      const meta = call.sourceMetadata as Record<string, unknown>;
+      expect(meta.expected_rate_level).toBeUndefined();
+    });
   });
 
   it('stores notes in sourceMetadata', async () => {

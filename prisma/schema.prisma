@@ -722,52 +722,78 @@ model TradingAccount {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
-  trades    Trade[]
-  cashFlows CashFlow[]
+  executions Execution[]
+  cashFlows  CashFlow[]
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, status])
   @@map("trading_accounts")
 }
 
+// Trade = the idea: one setup, one pair, one direction, one entry rationale.
+// This is the unit every edge statistic counts. The actual fills — account,
+// risk %, lot size, actual prices, exit, P&L, R — live on Execution, one per
+// account the idea was taken in. Edge is a property of the setup; P&L is a
+// property of the account.
 model Trade {
+  id               String   @id @default(uuid())
+  userId           String   @map("user_id") @db.Uuid
+  model            String   @db.VarChar(60)
+  pair             String   @db.VarChar(20)
+  direction        String   @db.VarChar(8) // Buy | Sell
+  plannedEntry     Decimal  @map("planned_entry") @db.Decimal(20, 6)
+  plannedSl        Decimal  @map("planned_sl") @db.Decimal(20, 6)
+  plannedFirstTp   Decimal? @map("planned_first_tp") @db.Decimal(20, 6)
+  plannedMainTp    Decimal  @map("planned_main_tp") @db.Decimal(20, 6)
+  conviction       String   @db.VarChar(10) // Low | Medium | High
+  dateOpened       DateTime @map("date_opened")
+  session          String   @db.VarChar(24)
+  fundamentalScore Int?     @map("fundamental_score") @db.SmallInt
+  screenshots      String[]
+  psychology       String?  @db.VarChar(120)
+  notes            String?
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  executions Execution[]
+
+  // Hot path: list a user's ideas newest-first.
+  @@index([userId, dateOpened(sort: Desc)])
+  @@map("trades")
+}
+
+// Execution = the fill, per account. Its own account, risk %, lot size, actual
+// entry, exit, P&L and R. Exactly one execution per trade is flagged primary —
+// the idea's outcome, for edge statistics, is the primary execution's outcome.
+// The at-most-one-primary-per-trade invariant is enforced by a partial unique
+// index (see migration SQL, Prisma cannot express a WHERE-qualified unique
+// index in schema.prisma directly).
+model Execution {
   id                String    @id @default(uuid())
-  userId            String    @map("user_id") @db.Uuid
+  tradeId           String    @map("trade_id")
   accountId         String    @map("account_id")
-  model             String    @db.VarChar(60)
-  pair              String    @db.VarChar(20)
-  direction         String    @db.VarChar(8) // Buy | Sell
+  isPrimary         Boolean   @default(false) @map("is_primary")
+  riskPct           Decimal   @map("risk_pct") @db.Decimal(8, 2)
+  lotSize           Decimal   @map("lot_size") @db.Decimal(12, 4)
   entryPrice        Decimal   @map("entry_price") @db.Decimal(20, 6)
-  slPrice           Decimal   @map("sl_price") @db.Decimal(20, 6)
-  firstTpPrice      Decimal?  @map("first_tp_price") @db.Decimal(20, 6)
-  mainTpPrice       Decimal   @map("main_tp_price") @db.Decimal(20, 6)
   partialExitPrice  Decimal?  @map("partial_exit_price") @db.Decimal(20, 6)
   partialExitLotPct Decimal?  @map("partial_exit_lot_pct") @db.Decimal(8, 2)
   mainExitPrice     Decimal?  @map("main_exit_price") @db.Decimal(20, 6)
-  lotSize           Decimal   @map("lot_size") @db.Decimal(12, 4)
+  exitType          String    @default("TP") @map("exit_type") @db.VarChar(16) // TP | SL | Manual | Partial+TP | Partial+SL | BE
+  dateClosed        DateTime? @map("date_closed")
   totalPips         Decimal   @default(0) @map("total_pips") @db.Decimal(12, 2)
-  riskPct           Decimal   @map("risk_pct") @db.Decimal(8, 2)
-  conviction        String    @db.VarChar(10) // Low | Medium | High
   blendedPnl        Decimal   @default(0) @map("blended_pnl") @db.Decimal(20, 2)
   blendedRr         Decimal   @default(0) @map("blended_rr") @db.Decimal(12, 2)
-  exitType          String    @default("TP") @map("exit_type") @db.VarChar(16) // TP | SL | Manual | Partial+TP | Partial+SL | BE
-  dateOpened        DateTime  @map("date_opened")
-  dateClosed        DateTime? @map("date_closed")
-  session           String    @db.VarChar(24)
-  fundamentalScore  Int?      @map("fundamental_score") @db.SmallInt
-  screenshots       String[]
-  psychology        String?   @db.VarChar(120)
-  notes             String?
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
+  trade   Trade          @relation(fields: [tradeId], references: [id], onDelete: Cascade)
   account TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
-  // Hot path: list a user's trades newest-first; filter by account.
-  @@index([userId, dateOpened(sort: Desc)])
-  @@index([userId, accountId])
+  @@index([tradeId])
   @@index([accountId])
-  @@map("trades")
+  @@index([accountId, dateClosed])
+  @@map("executions")
 }
 
 model PlannedTrade {

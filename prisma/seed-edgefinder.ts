@@ -1093,16 +1093,19 @@ function ruleForIndicator(code: string): ScoringRuleSeed {
     // Phase 1: AU unemployment behaves like every other unemployment rate.
     'AU_UNEMPLOYMENT',
   ]);
-  const cpiRateCycle: Record<string, string> = {
-    US_CPI_YOY: 'USD',
-    EU_CPI_YOY: 'EUR',
-    UK_CPI_YOY: 'GBP',
-    JP_CPI_YOY: 'JPY',
-    // Phase 1. Tokyo CPI intentionally shares the JPY stance row with
-    // JP_CPI_YOY — one gate, so both flip together.
-    JP_TOKYO_CPI_YOY: 'JPY',
-    AU_CPI_YOY: 'AUD',
-  };
+  // Change 1 (cycle-gating removal): CPI no longer scores off the declared
+  // central-bank stance. The forecast already prices the stance in — gating
+  // the matrix on HIKING/CUTTING double-counted it, and one-sidedly: under
+  // HIKING, MISS floored at 0 instead of -1, handing any hiking currency a
+  // structural bull prop that had nothing to do with surprise. All six CPI
+  // indicators (5 currencies + JP_TOKYO_CPI_YOY, which shared JPY's stance
+  // row) now fall through to the standard `normal` branch below, exactly
+  // like every other surprise-scored indicator. This map is left in place,
+  // emptied, rather than deleted, so the cpi_rate_cycle code path stays
+  // legible and trivially reversible; cpi-rate-cycle.handler.ts and its
+  // HANDLERS_BY_TYPE registration are likewise kept, just unreachable now
+  // that no ScoringRule references the `cpi_rate_cycle` type.
+  const cpiRateCycle: Record<string, string> = {};
   const rateDecisionCodes = new Set([
     'US_FED_RATE',
     'EU_ECB_RATE',

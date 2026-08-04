@@ -34,11 +34,17 @@ async function loadOwnedAccount(userId: string, id: string): Promise<AccountWith
   return account;
 }
 
-/** Sum of realized P&L from closed trades, grouped by account, for one user. */
+// Account balances are derived from execution-level blendedPnl, summed by
+// accountId — this is unchanged by the idea/execution split (balances were
+// already correctly account-scoped) and must stay execution-level, never
+// rolled up to the idea. Executions have no userId column; ownership is
+// enforced by scoping the account_id(s) queried to accounts owned by userId.
+
+/** Sum of realized P&L from closed executions, grouped by account, for one user. */
 async function realizedPnlByAccount(userId: string): Promise<Map<string, number>> {
-  const rows = await prisma.trade.groupBy({
+  const rows = await prisma.execution.groupBy({
     by: ['accountId'],
-    where: { userId, dateClosed: { not: null } },
+    where: { dateClosed: { not: null }, account: { userId } },
     _sum: { blendedPnl: true },
   });
   const map = new Map<string, number>();
@@ -48,9 +54,9 @@ async function realizedPnlByAccount(userId: string): Promise<Map<string, number>
   return map;
 }
 
-/** Sum of realized P&L from closed trades for a single account. */
+/** Sum of realized P&L from closed executions for a single account. */
 async function realizedPnlForAccount(accountId: string): Promise<number> {
-  const agg = await prisma.trade.aggregate({
+  const agg = await prisma.execution.aggregate({
     where: { accountId, dateClosed: { not: null } },
     _sum: { blendedPnl: true },
   });
@@ -133,8 +139,31 @@ export async function updateAccount(
 
 export async function deleteAccount(userId: string, id: string): Promise<void> {
   await loadOwnedAccount(userId, id);
-  // Trades + cash flows cascade via FK ON DELETE CASCADE.
-  await prisma.tradingAccount.delete({ where: { id } });
+
+  // Executions + cash flows cascade via FK ON DELETE CASCADE. A Trade (idea)
+  // is not itself FK-linked to an account anymore, so an idea that was only
+  // ever executed in this account would otherwise survive with zero
+  // executions — invalid per the trade/execution invariant. Find those ideas
+  // first, delete the account (cascading its executions), then remove any
+  // idea left with no executions at all. Ideas that also ran in another
+  // account keep their remaining execution(s) untouched.
+  const onlyThisAccount = await prisma.trade.findMany({
+    where: { userId, executions: { every: { accountId: id }, some: {} } },
+    select: { id: true },
+  });
+
+  await prisma.$transaction(async (tx) => {
+    await tx.tradingAccount.delete({ where: { id } });
+    if (onlyThisAccount.length > 0) {
+      const orphaned = await tx.trade.findMany({
+        where: { id: { in: onlyThisAccount.map((t) => t.id) }, executions: { none: {} } },
+        select: { id: true },
+      });
+      if (orphaned.length > 0) {
+        await tx.trade.deleteMany({ where: { id: { in: orphaned.map((t) => t.id) } } });
+      }
+    }
+  });
 }
 
 export async function addCashFlow(

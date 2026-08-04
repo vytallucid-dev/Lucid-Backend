@@ -254,7 +254,7 @@ describe('fetchForexFactoryWeek', () => {
     expect(mockedUpsert).not.toHaveBeenCalled();
   });
 
-  it('rate decision with prior rate computes bps_change correctly', async () => {
+  it('rate decision with prior rate computes bps_change correctly, and forecast (expected level) as a matching bps delta', async () => {
     mockedGetCalendar.mockResolvedValue({
       events: [
         makeEvent({
@@ -279,12 +279,17 @@ describe('fetchForexFactoryWeek', () => {
     expect(result.rowsInserted).toBe(1);
     const call = mockedUpsert.mock.calls[0][0];
     expect(call.value).toBeCloseTo(25, 6);
-    expect(call.forecastValue).toBeNull();
+    // Change 2 Step 1: forecast ('5.25%', an expected absolute rate level) is
+    // converted to a bps-change delta against the SAME priorRate (5.0) as
+    // value — same unit, so an "as expected" 25bp hike stores forecastValue
+    // = 25 (matching value = 25), which is what lets the handler score it 0.
+    expect(call.forecastValue).toBeCloseTo(25, 6);
     expect((call.sourceMetadata as Record<string, unknown>).rate_level).toBe(5.25);
+    expect((call.sourceMetadata as Record<string, unknown>).expected_rate_level).toBe(5.25);
     expect((call.sourceMetadata as Record<string, unknown>).first_release).toBeUndefined();
   });
 
-  it('rate decision with no prior data stores bps_change=0 and first_release=true', async () => {
+  it('rate decision with no prior data stores bps_change=0, first_release=true, and forecastValue null (no baseline to convert against)', async () => {
     mockedGetCalendar.mockResolvedValue({
       events: [
         makeEvent({
@@ -308,6 +313,7 @@ describe('fetchForexFactoryWeek', () => {
 
     const call = mockedUpsert.mock.calls[0][0];
     expect(call.value).toBe(0);
+    expect(call.forecastValue).toBeNull();
     expect((call.sourceMetadata as Record<string, unknown>).rate_level).toBe(5.25);
     expect((call.sourceMetadata as Record<string, unknown>).first_release).toBe(true);
   });

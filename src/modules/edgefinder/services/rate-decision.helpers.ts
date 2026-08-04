@@ -32,3 +32,22 @@ export async function getPriorRateLevel(
   }
   return null;
 }
+
+/**
+ * Change 2 (rate decision scores surprise) — Step 1. Converts an absolute
+ * rate level (entered/published the same way `actual` is) into a bps-change
+ * delta versus a prior level, using the IDENTICAL formula ingestion already
+ * uses for `value`: `(level - priorLevel) * 100`. Reusing this one function
+ * for both the actual bps-change and the expected bps-change is what keeps
+ * DataPoint.value and DataPoint.forecastValue in the same unit — the thing
+ * the recon flagged as the most likely way this silently breaks.
+ *
+ * Returns null when there is no level to convert, or no prior level to
+ * diff against (first release) — there is no meaningful delta to store, and
+ * a null forecastValue is exactly the "no expectation on file" signal the
+ * rate-decision handler's insufficient_data path (Step 3) depends on.
+ */
+export function levelToBpsChange(level: number | null, priorLevel: number | null): number | null {
+  if (level === null || priorLevel === null) return null;
+  return (level - priorLevel) * 100;
+}

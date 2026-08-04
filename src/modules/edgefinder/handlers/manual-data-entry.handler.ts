@@ -94,6 +94,9 @@ export async function manualDataEntryHandler(
       value: result.value,
       isRateDecision: result.isRateDecision,
       ...(result.rateLevel !== undefined ? { rateLevel: result.rateLevel } : {}),
+      ...(result.rateExpectedLevel !== undefined
+        ? { rateExpectedLevel: result.rateExpectedLevel }
+        : {}),
       metadata: {
         forecastValue: result.forecastValue,
         previousValue: result.previousValue,

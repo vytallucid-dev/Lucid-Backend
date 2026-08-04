@@ -117,6 +117,34 @@ describe('manualDataEntryHandler', () => {
     expect(body.isRateDecision).toBe(true);
   });
 
+  it('includes rateExpectedLevel in response when the service returns one (Change 2 Step 1)', async () => {
+    mockedIngest.mockResolvedValue({
+      dataPointId: 'dp-fed-2',
+      action: 'inserted',
+      indicator: { code: 'US_FED_RATE', name: 'Fed Funds' },
+      observationDate: new Date('2026-04-01T00:00:00.000Z'),
+      value: 25,
+      isRateDecision: true,
+      rateLevel: 5.25,
+      rateExpectedLevel: 5.25,
+      forecastValue: 25,
+      previousValue: null,
+      notes: null,
+    });
+
+    const { res } = await call({
+      indicatorCode: 'US_FED_RATE',
+      observationDate: '2026-04-01',
+      actual: 5.25,
+      forecast: 5.25,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.rateExpectedLevel).toBe(5.25);
+    expect((body.metadata as Record<string, unknown>).forecastValue).toBe(25);
+  });
+
   it('400 INVALID_BODY when indicatorCode missing', async () => {
     const { err } = await call({
       observationDate: '2026-04-01',

@@ -7,7 +7,7 @@ import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.reposi
 import type { ForexFactoryEvent } from '@core/clients/forex-factory/types';
 import { mapEventToIndicator } from './forex-factory-event-mapping';
 import { parseForexFactoryValue } from './forex-factory-value-parser';
-import { getPriorRateLevel } from './rate-decision.helpers';
+import { getPriorRateLevel, levelToBpsChange } from './rate-decision.helpers';
 
 const JOB_NAME = 'forex_factory_weekly_fetch';
 
@@ -94,16 +94,24 @@ async function ingestRateDecision(
   indicatorCode: string,
   observationDate: Date,
   newRateLevel: number,
+  expectedRateLevel: number | null,
   event: ForexFactoryEvent,
   logId: string,
 ): Promise<IngestOneOutcome> {
   const priorRate = await getPriorRateLevel(indicatorId, observationDate);
   const firstRelease = priorRate === null;
   const bpsChange = firstRelease ? 0 : (newRateLevel - priorRate) * 100;
+  // Change 2 (rate decision scores surprise) — Step 1. FF publishes forecast
+  // for a rate event as the expected absolute rate level, same as actual/
+  // previous (see forex-factory-event-mapping.ts / the value parser). Convert
+  // it to a bps-change delta against the SAME priorRate as `value`, so both
+  // land in the same unit.
+  const forecastBpsChange = levelToBpsChange(expectedRateLevel, priorRate);
 
   const sourceMetadata: Prisma.InputJsonObject = {
     ...buildSourceMetadata(event),
     rate_level: newRateLevel,
+    ...(expectedRateLevel !== null ? { expected_rate_level: expectedRateLevel } : {}),
     ...(firstRelease ? { first_release: true } : {}),
   };
 
@@ -111,7 +119,7 @@ async function ingestRateDecision(
     indicatorId,
     observationDate,
     value: bpsChange,
-    forecastValue: null,
+    forecastValue: forecastBpsChange,
     source: 'forex_factory',
     sourceMetadata,
     fetchedVia: logId,
@@ -124,6 +132,8 @@ async function ingestRateDecision(
       newRateLevel,
       priorRate,
       bpsChange,
+      expectedRateLevel,
+      forecastBpsChange,
       action: result.action,
     },
     'ForexFactory: rate decision ingested',
@@ -277,6 +287,7 @@ export async function fetchForexFactoryWeek(
               indicatorCode,
               observationDate,
               resolved.actual as number,
+              resolved.forecast,
               event,
               log.id,
             )

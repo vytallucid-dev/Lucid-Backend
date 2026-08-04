@@ -1,4 +1,4 @@
-import type { Prisma, CashFlow, PlannedTrade, Trade, TradingModel, TradingPair } from '@prisma/client';
+import type { Prisma, CashFlow, Execution, PlannedTrade, Trade, TradingModel, TradingPair } from '@prisma/client';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Serializers: Prisma rows → the exact snake_case shapes the frontend already
@@ -103,28 +103,62 @@ export function toAccountDto(a: AccountWithFlows, realizedPnl = 0): AccountDto {
   };
 }
 
-export interface TradeDto {
+export interface ExecutionDto {
   id: string;
+  trade_id: string;
   account_id: string;
-  model: string;
-  pair: string;
-  direction: string;
+  is_primary: boolean;
+  risk_pct: number;
+  lot_size: number;
   entry_price: number;
-  sl_price: number;
-  first_tp_price: number | null;
-  main_tp_price: number;
   partial_exit_price: number | null;
   partial_exit_lot_pct: number | null;
   main_exit_price: number;
-  lot_size: number;
   total_pips: number;
-  risk_pct: number;
-  conviction: string;
   blended_pnl: number;
   blended_rr: number;
   exit_type: string;
-  date_opened: string;
   date_closed: string;
+}
+
+export function toExecutionDto(e: Execution): ExecutionDto {
+  return {
+    id: e.id,
+    trade_id: e.tradeId,
+    account_id: e.accountId,
+    is_primary: e.isPrimary,
+    risk_pct: num(e.riskPct) ?? 0,
+    lot_size: num(e.lotSize) ?? 0,
+    entry_price: num(e.entryPrice) ?? 0,
+    partial_exit_price: num(e.partialExitPrice),
+    partial_exit_lot_pct: num(e.partialExitLotPct),
+    main_exit_price: num(e.mainExitPrice) ?? 0,
+    total_pips: num(e.totalPips) ?? 0,
+    blended_pnl: num(e.blendedPnl) ?? 0,
+    blended_rr: num(e.blendedRr) ?? 0,
+    exit_type: e.exitType,
+    date_closed: e.dateClosed ? e.dateClosed.toISOString() : '',
+  };
+}
+
+// TradeDto is the idea: setup, rationale, and its planned prices, plus every
+// execution (fill) it was taken with. Fields that used to live flat on Trade —
+// account_id, risk_pct, lot_size, entry_price (as the actual fill), the exit
+// fields, total_pips, blended_pnl, blended_rr — now live per-execution inside
+// `executions`, since they differ per account. entry_price/sl_price/
+// first_tp_price/main_tp_price are renamed planned_entry/planned_sl/
+// planned_first_tp/planned_main_tp — same values, now explicitly "the plan".
+export interface TradeDto {
+  id: string;
+  model: string;
+  pair: string;
+  direction: string;
+  planned_entry: number;
+  planned_sl: number;
+  planned_first_tp: number | null;
+  planned_main_tp: number;
+  conviction: string;
+  date_opened: string;
   session: string;
   fundamental_score: number | null;
   screenshots: string[];
@@ -132,31 +166,23 @@ export interface TradeDto {
   notes: string;
   pre_trade_memory: null;
   debrief_memory: null;
+  executions: ExecutionDto[];
 }
 
-export function toTradeDto(t: Trade): TradeDto {
+export type TradeWithExecutions = Trade & { executions: Execution[] };
+
+export function toTradeDto(t: TradeWithExecutions): TradeDto {
   return {
     id: t.id,
-    account_id: t.accountId,
     model: t.model,
     pair: t.pair,
     direction: t.direction,
-    entry_price: num(t.entryPrice) ?? 0,
-    sl_price: num(t.slPrice) ?? 0,
-    first_tp_price: num(t.firstTpPrice),
-    main_tp_price: num(t.mainTpPrice) ?? 0,
-    partial_exit_price: num(t.partialExitPrice),
-    partial_exit_lot_pct: num(t.partialExitLotPct),
-    main_exit_price: num(t.mainExitPrice) ?? 0,
-    lot_size: num(t.lotSize) ?? 0,
-    total_pips: num(t.totalPips) ?? 0,
-    risk_pct: num(t.riskPct) ?? 0,
+    planned_entry: num(t.plannedEntry) ?? 0,
+    planned_sl: num(t.plannedSl) ?? 0,
+    planned_first_tp: num(t.plannedFirstTp),
+    planned_main_tp: num(t.plannedMainTp) ?? 0,
     conviction: t.conviction,
-    blended_pnl: num(t.blendedPnl) ?? 0,
-    blended_rr: num(t.blendedRr) ?? 0,
-    exit_type: t.exitType,
     date_opened: t.dateOpened.toISOString(),
-    date_closed: t.dateClosed ? t.dateClosed.toISOString() : '',
     session: t.session,
     fundamental_score: t.fundamentalScore,
     screenshots: t.screenshots,
@@ -164,6 +190,11 @@ export function toTradeDto(t: Trade): TradeDto {
     notes: t.notes ?? '',
     pre_trade_memory: null,
     debrief_memory: null,
+    // Primary first, then the rest in creation order — the primary execution
+    // is the idea's outcome for edge statistics (see lib/stats.ts frontend).
+    executions: [...t.executions]
+      .sort((a, b) => (a.isPrimary === b.isPrimary ? 0 : a.isPrimary ? -1 : 1))
+      .map(toExecutionDto),
   };
 }
 

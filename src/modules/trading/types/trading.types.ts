@@ -72,26 +72,20 @@ export const cashFlowSchema = z.object({
   note: z.string().trim().max(1000).optional().nullable(),
 });
 
-// ─── Trades ──────────────────────────────────────────────────────────────────
+// ─── Trades (the idea) + Executions (the fill, per account) ────────────────────
+//
+// Trade = the idea: one setup, one pair, one direction, one entry rationale.
+// Execution = the fill: its own account, risk %, lot size, actual prices, exit,
+// P&L and R. A trade is created with one or more executions inline; executions
+// on an existing trade are then added/updated/removed/re-primaried individually.
 
-export const createTradeSchema = z
+export const createExecutionSchema = z
   .object({
     account_id: z.string().min(1),
-    model: z.string().trim().min(1).max(60),
-    pair: z.string().trim().min(1).max(20),
-    direction: z.enum(DIRECTIONS),
-    entry_price: z.number().finite(),
-    sl_price: z.number().finite(),
-    first_tp_price: z.number().finite().optional().nullable(),
-    main_tp_price: z.number().finite(),
-    lot_size: z.number().finite().positive(),
+    is_primary: z.boolean().optional(),
     risk_pct: z.number().finite().nonnegative(),
-    conviction: z.enum(CONVICTIONS),
-    fundamental_score: z.number().int().min(-50).max(50).optional().nullable(),
-    psychology: z.string().trim().max(120).optional().nullable(),
-    notes: z.string().trim().max(5000).optional().nullable(),
-    screenshots: z.array(z.string()).max(20).optional(),
-    date_opened: dateTimeLike.optional(),
+    lot_size: z.number().finite().positive(),
+    entry_price: z.number().finite(),
     // Closing fields
     is_closed: z.boolean().default(false),
     partial_exit_price: z.number().finite().optional().nullable(),
@@ -99,27 +93,61 @@ export const createTradeSchema = z
     main_exit_price: z.number().finite().optional().nullable(),
     date_closed: dateTimeLike.optional().nullable(),
     exit_type: z.enum(EXIT_TYPES).default('TP'),
-    // User-entered realized P&L for the closed trade. When provided it is stored
-    // verbatim as the trade's result (no recompute); the app's outcome/aggregates
-    // read it. Null/omitted leaves the trade with no manual P&L.
+    // User-entered realized P&L for this execution. When provided it is stored
+    // verbatim as the result (no recompute); the app's outcome/aggregates read
+    // it. Null/omitted leaves the execution with no manual P&L override.
     net_pnl: z.number().finite().optional().nullable(),
   })
   .refine((d) => !d.is_closed || d.main_exit_price != null, {
-    message: 'main_exit_price is required when a trade is closed',
+    message: 'main_exit_price is required when an execution is closed',
     path: ['main_exit_price'],
   });
 
-export const updateTradeSchema = z.object({
+export const updateExecutionSchema = z.object({
   account_id: z.string().min(1).optional(),
+  is_primary: z.boolean().optional(),
+  risk_pct: z.number().finite().nonnegative().optional(),
+  lot_size: z.number().finite().positive().optional(),
+  entry_price: z.number().finite().optional(),
+  is_closed: z.boolean().optional(),
+  partial_exit_price: z.number().finite().optional().nullable(),
+  partial_exit_lot_pct: z.number().finite().min(0).max(100).optional().nullable(),
+  main_exit_price: z.number().finite().optional().nullable(),
+  date_closed: dateTimeLike.optional().nullable(),
+  exit_type: z.enum(EXIT_TYPES).optional(),
+  net_pnl: z.number().finite().optional().nullable(),
+});
+
+export const createTradeSchema = z
+  .object({
+    model: z.string().trim().min(1).max(60),
+    pair: z.string().trim().min(1).max(20),
+    direction: z.enum(DIRECTIONS),
+    planned_entry: z.number().finite(),
+    planned_sl: z.number().finite(),
+    planned_first_tp: z.number().finite().optional().nullable(),
+    planned_main_tp: z.number().finite(),
+    conviction: z.enum(CONVICTIONS),
+    fundamental_score: z.number().int().min(-50).max(50).optional().nullable(),
+    psychology: z.string().trim().max(120).optional().nullable(),
+    notes: z.string().trim().max(5000).optional().nullable(),
+    screenshots: z.array(z.string()).max(20).optional(),
+    date_opened: dateTimeLike.optional(),
+    executions: z.array(createExecutionSchema).min(1, 'At least one account execution is required'),
+  })
+  .refine((d) => d.executions.filter((e) => e.is_primary).length <= 1, {
+    message: 'At most one execution may be marked primary',
+    path: ['executions'],
+  });
+
+export const updateTradeSchema = z.object({
   model: z.string().trim().min(1).max(60).optional(),
   pair: z.string().trim().min(1).max(20).optional(),
   direction: z.enum(DIRECTIONS).optional(),
-  entry_price: z.number().finite().optional(),
-  sl_price: z.number().finite().optional(),
-  first_tp_price: z.number().finite().optional().nullable(),
-  main_tp_price: z.number().finite().optional(),
-  lot_size: z.number().finite().positive().optional(),
-  risk_pct: z.number().finite().nonnegative().optional(),
+  planned_entry: z.number().finite().optional(),
+  planned_sl: z.number().finite().optional(),
+  planned_first_tp: z.number().finite().optional().nullable(),
+  planned_main_tp: z.number().finite().optional(),
   conviction: z.enum(CONVICTIONS).optional(),
   // Must match createTradeSchema's range (−50…50). The Oracle/Lucid score can be
   // negative or >10, so the old min(1).max(10) bound rejected edits of any trade
@@ -129,14 +157,6 @@ export const updateTradeSchema = z.object({
   notes: z.string().trim().max(5000).optional().nullable(),
   screenshots: z.array(z.string()).max(20).optional(),
   date_opened: dateTimeLike.optional(),
-  is_closed: z.boolean().optional(),
-  partial_exit_price: z.number().finite().optional().nullable(),
-  partial_exit_lot_pct: z.number().finite().min(0).max(100).optional().nullable(),
-  main_exit_price: z.number().finite().optional().nullable(),
-  date_closed: dateTimeLike.optional().nullable(),
-  exit_type: z.enum(EXIT_TYPES).optional(),
-  // User-entered realized P&L (see createTradeSchema). Stored verbatim as the result.
-  net_pnl: z.number().finite().optional().nullable(),
 });
 
 // ─── Planned trades ──────────────────────────────────────────────────────────
@@ -216,6 +236,8 @@ export type UpdateAccountInput = z.infer<typeof updateAccountSchema>;
 export type CashFlowInput = z.infer<typeof cashFlowSchema>;
 export type CreateTradeInput = z.infer<typeof createTradeSchema>;
 export type UpdateTradeInput = z.infer<typeof updateTradeSchema>;
+export type CreateExecutionInput = z.infer<typeof createExecutionSchema>;
+export type UpdateExecutionInput = z.infer<typeof updateExecutionSchema>;
 export type CreatePlannedInput = z.infer<typeof createPlannedSchema>;
 export type UpdatePlannedInput = z.infer<typeof updatePlannedSchema>;
 export type CreateModelInput = z.infer<typeof createModelSchema>;
