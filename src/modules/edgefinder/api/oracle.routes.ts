@@ -30,6 +30,7 @@ import type {
   CotHistoryPoint,
   CycleStancesResponse,
   CycleStanceEntry,
+  NextReleaseInfo,
 } from './oracle.types';
 import {
   scoreToFrontendBias,
@@ -38,12 +39,11 @@ import {
   pairScoreToIndicatorValue,
   compute12WeekHistory,
   computePair12WeekHistory,
-  isStale,
+  isAging,
   formatDateShort,
   formatPercentWithSign,
   formatIndicatorValue,
   computeSurprise,
-  computeNextRelease,
   INDICATOR_SLOT,
   EMPTY_INDICATOR_SLOTS,
   PAIR_ROW_TO_SLOT,
@@ -53,6 +53,8 @@ import {
   dbFrequencyToHeatmapFrequency,
 } from './oracle-mappers';
 import { getCompassSnapshot } from '@modules/edgefinder/services/compass/compass-public.service';
+import { calendarEventsRepository } from '@core/repositories/calendar-events.repository';
+import { findOverdueByIndicatorCodes } from '@modules/edgefinder/services/overdue-resolver';
 import {
   getInstrumentRegistry,
   requireScorecardAsset,
@@ -61,6 +63,7 @@ import {
   requireCotAsset,
 } from './instrument-registry';
 import { buildDataHealth, EMPTY_DATA_HEALTH } from './data-health';
+import { collapseToLatestReleasePerIndicator } from '@core/repositories/latest-release-by-indicator';
 
 export const oracleRouter = Router();
 
@@ -472,7 +475,9 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
         orderBy: { observationDate: 'desc' },
         select: {
           indicatorId: true,
+          variant: true,
           observationDate: true,
+          vintageDate: true,
           value: true,
           forecastValue: true,
           previousValue: true,
@@ -483,10 +488,16 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
     ]);
 
     const indicatorByCode = new Map(indicatorRecords.map((i) => [i.code, i]));
-    const dpByIndicatorId = new Map<string, (typeof dataPointRows)[0]>();
-    for (const dp of dataPointRows) {
-      if (!dpByIndicatorId.has(dp.indicatorId)) dpByIndicatorId.set(dp.indicatorId, dp);
-    }
+    // Most-recent-release wins when an indicator has more than one isCurrent
+    // row for the same latest observationDate (Flash + Final coexisting) —
+    // see B3/collapseToLatestReleasePerIndicator.
+    const dpByIndicatorId = await collapseToLatestReleasePerIndicator(dataPointRows);
+
+    // B1 — overdue is per-event, so a single indicator can carry more than
+    // one overdue occurrence (Flash overdue AND Final overdue). The row only
+    // needs to know THAT it's overdue, not which occurrence — any() suffices
+    // here; the badge/panel is what needs the individual events.
+    const overdueByCode = await findOverdueByIndicatorCodes(indicatorCodes, now);
 
     const sectionMap = new Map<
       'ECONOMIC GROWTH' | 'INFLATION' | 'JOBS MARKET',
@@ -509,12 +520,12 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
         ? Number(dp.previousValue)
         : null;
 
-      const stale = dp ? isStale(dp.observationDate, now) : false;
+      const aging = dp ? isAging(dp.observationDate, now) : false;
 
       const isInsufficient = entry.outcome === 'insufficient_data' || entry.outcome === 'absent';
-      const indicatorOutcome: 'scored' | 'insufficient_data' | 'stale' = isInsufficient
+      const indicatorOutcome: 'scored' | 'insufficient_data' | 'aging' = isInsufficient
         ? 'insufficient_data'
-        : stale ? 'stale' : 'scored';
+        : aging ? 'aging' : 'scored';
 
       const indicator: ScorecardIndicator = {
         name: indRecord.name,
@@ -527,7 +538,8 @@ oracleRouter.get('/scorecard', async (req: Request, res: Response, next: NextFun
         score: isInsufficient ? null : toNullableScore(entry.score, entry.outcome),
         outcome: indicatorOutcome,
         reason: isInsufficient ? (entry.reason ?? 'No data ingested') : null,
-        ...(stale && dp ? { staleDate: formatDateShort(dp.observationDate) } : {}),
+        ...(aging && dp ? { agingDate: formatDateShort(dp.observationDate) } : {}),
+        ...((overdueByCode.get(entry.indicatorCode)?.length ?? 0) > 0 ? { overdue: true } : {}),
       };
 
       if (!sectionMap.has(sectionLabel)) sectionMap.set(sectionLabel, []);
@@ -786,7 +798,9 @@ oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunc
         orderBy: { observationDate: 'desc' },
         select: {
           indicatorId: true,
+          variant: true,
           observationDate: true,
+          vintageDate: true,
           value: true,
           forecastValue: true,
           previousValue: true,
@@ -799,10 +813,9 @@ oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunc
       }),
     ]);
 
-    const dpByIndicatorId = new Map<string, (typeof dataPointRows)[0]>();
-    for (const dp of dataPointRows) {
-      if (!dpByIndicatorId.has(dp.indicatorId)) dpByIndicatorId.set(dp.indicatorId, dp);
-    }
+    // Most-recent-release wins when an indicator has more than one isCurrent
+    // row for the same latest observationDate (Flash + Final coexisting).
+    const dpByIndicatorId = await collapseToLatestReleasePerIndicator(dataPointRows);
 
     // Build code → score map from latest scorecards
     const latestScorecard = new Map<string, (typeof scorecardRows)[0]>();
@@ -829,6 +842,28 @@ oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunc
     }
 
     const now = new Date();
+
+    // B1/B4: nextRelease derives from stored calendar_events, never from
+    // frequency arithmetic. One batched query for every indicator on the
+    // heatmap (NIFTY indicators are structurally absent from `indicators`
+    // here — this route only ever loads tool:'edgefinder' rows — so there is
+    // no NIFTY branch to write; a code with no stored future event is simply
+    // absent from the returned map, same as any other unresolved code).
+    const nextReleaseByCode = await calendarEventsRepository.findNextByIndicatorCodes(
+      indicators.map((i) => i.code),
+      now,
+    );
+
+    // B1 — overdue: a specific scheduled release passed with no matching
+    // entry. Independent of `aging` below (see the shared comment on
+    // isAging in oracle-mappers.ts). NIFTY indicators never appear in
+    // `indicators` here (edgefinder-only route), so they never enter this
+    // lookup and are structurally never overdue — no special-casing needed.
+    const overdueByCode = await findOverdueByIndicatorCodes(
+      indicators.map((i) => i.code),
+      now,
+    );
+
     // Seeded from the asset-derived economy-key list rather than a fixed
     // four keys, so a newly onboarded currency gets its own group instead of
     // pushing onto undefined.
@@ -866,13 +901,21 @@ oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunc
       const lastRelease = isDaily
         ? 'Daily'
         : dp ? formatDateShort(dp.observationDate) : '—';
-      const nextRelease = isDaily
-        ? 'Daily'
-        : isEventDriven
-          ? '—'
-          : dp ? computeNextRelease(dp.observationDate, freq) : '—';
 
-      const stale = dp && !isDaily ? isStale(dp.observationDate, now) : false;
+      // B1: the next scheduled occurrence of any variant, from calendar_events
+      // — not derived from lastRelease + frequency. Null is the honest,
+      // common answer: the feed is current-week-only, so most indicators have
+      // no future event stored at any given moment. isDaily/isEventDriven
+      // indicators simply never have a calendar_events row (no FF release
+      // maps to them), so they fall out of the same null path with no
+      // special-casing needed here — unlike the old arithmetic, which had to
+      // hand-write a 'Daily'/'—' branch for exactly those two cases.
+      const nextCalendarEvent = nextReleaseByCode.get(ind.code);
+      const nextRelease: NextReleaseInfo | null = nextCalendarEvent
+        ? { scheduledAt: nextCalendarEvent.scheduledAt.toISOString(), variant: nextCalendarEvent.variant }
+        : null;
+
+      const aging = dp && !isDaily ? isAging(dp.observationDate, now) : false;
 
       const isInsufficient = !scoreEntry
         || scoreEntry.outcome === 'insufficient_data'
@@ -882,15 +925,16 @@ oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunc
         ? null
         : toNullableScore(scoreEntry!.score, scoreEntry!.outcome);
 
-      const outcome: 'scored' | 'insufficient_data' | 'stale' = isInsufficient
+      const outcome: 'scored' | 'insufficient_data' | 'aging' = isInsufficient
         ? 'insufficient_data'
-        : stale ? 'stale' : 'scored';
+        : aging ? 'aging' : 'scored';
 
       const reason: string | null = isInsufficient
         ? (scoreEntry?.reason ?? 'No data ingested')
         : null;
 
       grouped[economyKey].push({
+        code: ind.code,
         name: displayName,
         frequency: dbFrequencyToHeatmapFrequency(isEventDriven ? 'monthly' : freq),
         category,
@@ -905,7 +949,8 @@ oracleRouter.get('/heatmap', async (_req: Request, res: Response, next: NextFunc
         score,
         outcome,
         reason,
-        ...(stale ? { stale: true } : {}),
+        ...(aging ? { aging: true } : {}),
+        ...((overdueByCode.get(ind.code)?.length ?? 0) > 0 ? { overdue: true } : {}),
       });
     }
 
@@ -1017,7 +1062,14 @@ async function buildFxPairData(
         isCurrent: true,
       },
       orderBy: { observationDate: 'desc' },
-      select: { indicatorId: true, value: true, forecastValue: true },
+      select: {
+        indicatorId: true,
+        variant: true,
+        observationDate: true,
+        vintageDate: true,
+        value: true,
+        forecastValue: true,
+      },
     }),
     buildFxCotSide(pairMeta.base),
     buildFxCotSide(pairMeta.quote),
@@ -1025,10 +1077,13 @@ async function buildFxPairData(
 
   // const indById = new Map(indicatorRecords.map((i) => [i.id, i]));
   const indByCode = new Map(indicatorRecords.map((i) => [i.code, i]));
-  const dpByIndicatorId = new Map<string, (typeof dataPointRows)[0]>();
-  for (const dp of dataPointRows) {
-    if (!dpByIndicatorId.has(dp.indicatorId)) dpByIndicatorId.set(dp.indicatorId, dp);
-  }
+  // Most-recent-release wins when an indicator has more than one isCurrent
+  // row for the same latest observationDate (Flash + Final coexisting).
+  const dpByIndicatorId = await collapseToLatestReleasePerIndicator(dataPointRows);
+
+  // Brought in line with the asset scorecard and heatmap — this row previously
+  // had no aging or overdue concept at all.
+  const overdueByCode = await findOverdueByIndicatorCodes(Array.from(indicatorCodes), now);
 
   function buildIndicatorSide(
     side: RowBreakdownSide,
@@ -1046,6 +1101,11 @@ async function buildFxPairData(
     const forecastNum = dp?.forecastValue !== null && dp?.forecastValue !== undefined
       ? Number(dp.forecastValue)
       : null;
+    // frequency is not daily-excluded here the way the heatmap does (isDaily
+    // guard) because this row shape carries no `frequency` per side to check
+    // — aging is computed the same way the asset scorecard does (any dp).
+    const aging = dp ? isAging(dp.observationDate, now) : false;
+    const overdue = (overdueByCode.get(side.code)?.length ?? 0) > 0;
 
     return {
       result,
@@ -1054,7 +1114,9 @@ async function buildFxPairData(
       ...(forecastNum !== null && actualNum !== null
         ? { surprise: computeSurprise(side.code, actualNum, forecastNum) ?? undefined }
         : {}),
-      outcome: 'scored',
+      outcome: aging ? 'aging' : 'scored',
+      ...(aging && dp ? { agingDate: formatDateShort(dp.observationDate) } : {}),
+      ...(overdue ? { overdue: true } : {}),
     };
   }
 

@@ -1,5 +1,5 @@
-import { prisma } from '@core/db/prisma';
 import { ScoringContext, ScoringResult, Score } from '../types';
+import { findLatestRelease } from '../helpers/latest-release';
 
 /**
  * Change 2 (rate decision scores surprise, not action). The engine scores
@@ -32,14 +32,7 @@ import { ScoringContext, ScoringResult, Score } from '../types';
  * every time it's asked, same as before.
  */
 export async function rateDecisionHandler(ctx: ScoringContext): Promise<ScoringResult> {
-  const dp = await prisma.dataPoint.findFirst({
-    where: {
-      indicatorId: ctx.indicatorId,
-      isCurrent: true,
-      observationDate: { lte: ctx.observationDate },
-    },
-    orderBy: { observationDate: 'desc' },
-  });
+  const dp = await findLatestRelease(ctx.indicatorId, ctx.observationDate);
 
   if (!dp) {
     return {

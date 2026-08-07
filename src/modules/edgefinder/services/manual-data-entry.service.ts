@@ -4,6 +4,7 @@ import { AppError } from '@core/middleware/error-handler';
 import { logger } from '@core/utils/logger';
 import { dataPointsRepository } from '@core/repositories/data-points.repository';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
+import { calendarEventDeferralsRepository } from '@core/repositories/calendar-event-deferrals.repository';
 import { getPriorRateLevel, levelToBpsChange } from './rate-decision.helpers';
 
 // Per-indicator log name (mirrors the NIFTY manual-input convention
@@ -31,6 +32,14 @@ export interface ManualEntryInput {
   // the service returns a `revisionMismatch` result and writes nothing. When
   // true, the caller has acknowledged the discrepancy and the write proceeds.
   confirmRevision?: boolean;
+  // Release variant (Flash/Final, Advance/Second/Third, ...). Required by the
+  // admin UI only where the indicator has more than one release type
+  // (IndicatorVariant has rows for it) — the frontend derives when to show
+  // the selector from that registry, never a hardcoded indicator list.
+  // Omitted/null for every single-release indicator, which is the common
+  // case and must stay clean. Threaded through to dataPointsRepository.upsert
+  // so Flash and Final never collide or get compared against each other.
+  variant?: string | null;
 }
 
 // Returned instead of ManualEntryResult when the submitted `previous` differs
@@ -55,11 +64,21 @@ export function isRevisionMismatch(
 // same "last stored actual" the frontend auto-fills into `previous`. Read-only;
 // considers only active vintages (isCurrent). Returns null when there is no
 // prior data point (first release).
+//
+// Same-variant only (B4): comparing a new Flash print's `previous` against
+// the last stored FINAL actual (or vice versa) would manufacture a spurious
+// revision-confirmation prompt every time, since Flash and Final routinely
+// differ from each other by design — that is not a revision, it's two
+// different releases. `variant` here is the release being entered now, and
+// this looks up the last row with that SAME variant. For a single-release
+// indicator (variant null on every row), this is exactly the old behaviour
+// (variant: null filters to variant: null, which is everything).
 async function getLastStoredActual(
   indicatorId: string,
+  variant: string | null,
 ): Promise<{ value: number; observationDate: Date } | null> {
   const latest = await prisma.dataPoint.findFirst({
-    where: { indicatorId, isCurrent: true },
+    where: { indicatorId, isCurrent: true, variant },
     orderBy: { observationDate: 'desc' },
     select: { value: true, observationDate: true },
   });
@@ -72,6 +91,7 @@ export interface ManualEntryResult {
   action: 'inserted' | 'revised' | 'skipped';
   indicator: { code: string; name: string };
   observationDate: Date;
+  variant: string | null;
   value: number;
   isRateDecision: boolean;
   rateLevel?: number;
@@ -114,6 +134,54 @@ export async function ingestManualEntry(
 
   const isRateDecision = indicator.code.endsWith('_RATE');
 
+  // ── Variant validation ────────────────────────────────────────────────
+  // Allowed variants are data (IndicatorVariant), never a hardcoded list —
+  // a new release type is a row insert there, never a code change here.
+  // Absence of any IndicatorVariant row for this indicator means it is
+  // single-release: variant must be omitted/null. Presence of rows means
+  // variant is required and must be one of the registered values, so a
+  // print can never be silently written without its release type recorded.
+  const registeredVariants = await prisma.indicatorVariant.findMany({
+    where: { indicatorId: indicator.id },
+    select: { variant: true },
+  });
+  const isMultiVariant = registeredVariants.length > 0;
+  const submittedVariant = input.variant ?? null;
+
+  if (isMultiVariant && submittedVariant === null) {
+    throw new AppError(
+      400,
+      `Indicator ${input.indicatorCode} has multiple release types (${registeredVariants
+        .map((v) => v.variant)
+        .join('/')}); a variant must be selected.`,
+      'VARIANT_REQUIRED',
+      { indicatorCode: input.indicatorCode, allowedVariants: registeredVariants.map((v) => v.variant) },
+    );
+  }
+  if (
+    !isMultiVariant &&
+    submittedVariant !== null
+  ) {
+    throw new AppError(
+      400,
+      `Indicator ${input.indicatorCode} is single-release; it does not accept a variant.`,
+      'VARIANT_NOT_ALLOWED',
+      { indicatorCode: input.indicatorCode },
+    );
+  }
+  if (
+    isMultiVariant &&
+    submittedVariant !== null &&
+    !registeredVariants.some((v) => v.variant === submittedVariant)
+  ) {
+    throw new AppError(
+      400,
+      `"${submittedVariant}" is not a registered variant for ${input.indicatorCode}.`,
+      'VARIANT_UNKNOWN',
+      { indicatorCode: input.indicatorCode, allowedVariants: registeredVariants.map((v) => v.variant) },
+    );
+  }
+
   // ── Revision pre-check (additive; before any write) ──────────────────────
   // The `previous` the user typed for this new print should equal the last
   // stored actual (the same value the frontend auto-fills). If it differs, the
@@ -135,7 +203,7 @@ export async function ingestManualEntry(
   } | null = null;
 
   if (!isRateDecision && input.previous !== null) {
-    const lastActual = await getLastStoredActual(indicator.id);
+    const lastActual = await getLastStoredActual(indicator.id, submittedVariant);
     if (
       lastActual !== null &&
       Math.abs(input.previous - lastActual.value) > REVISION_MATCH_TOLERANCE
@@ -196,6 +264,7 @@ export async function ingestManualEntry(
       const upsert = await dataPointsRepository.upsert({
         indicatorId: indicator.id,
         observationDate: input.observationDate,
+        variant: submittedVariant,
         value: bpsChange,
         forecastValue: forecastBpsChange,
         previousValue: null,
@@ -204,6 +273,13 @@ export async function ingestManualEntry(
         fetchedVia: log.id,
         notes: input.notes ?? null,
       });
+
+      // B2 — deferral is a snooze, never a suppression. Entering data always
+      // clears the flag regardless of deferral state (indefinite or
+      // to-a-date), regardless of whether this indicator was even overdue —
+      // the rule is unconditional on the write path, not conditional on the
+      // read path finding a match first.
+      await calendarEventDeferralsRepository.clearForEntry(indicator.id, submittedVariant);
 
       await dataFetchLogRepository.complete({
         logId: log.id,
@@ -233,6 +309,7 @@ export async function ingestManualEntry(
         action: upsert.action,
         indicator: { code: indicator.code, name: indicator.name },
         observationDate: input.observationDate,
+        variant: submittedVariant,
         value: bpsChange,
         isRateDecision: true,
         rateLevel: input.actual,
@@ -253,6 +330,7 @@ export async function ingestManualEntry(
     const upsert = await dataPointsRepository.upsert({
       indicatorId: indicator.id,
       observationDate: input.observationDate,
+      variant: submittedVariant,
       value: input.actual,
       forecastValue: input.forecast,
       previousValue: input.previous,
@@ -261,6 +339,10 @@ export async function ingestManualEntry(
       fetchedVia: log.id,
       notes: input.notes ?? null,
     });
+
+    // B2 — deferral is a snooze, never a suppression. See the matching
+    // comment on the rate-decision write path above.
+    await calendarEventDeferralsRepository.clearForEntry(indicator.id, submittedVariant);
 
     await dataFetchLogRepository.complete({
       logId: log.id,
@@ -326,6 +408,7 @@ export async function ingestManualEntry(
       action: upsert.action,
       indicator: { code: indicator.code, name: indicator.name },
       observationDate: input.observationDate,
+      variant: submittedVariant,
       value: input.actual,
       isRateDecision: false,
       forecastValue: input.forecast,

@@ -5,8 +5,9 @@ import { forexFactoryClient } from '@core/clients/forex-factory/forex-factory.cl
 import { dataPointsRepository } from '@core/repositories/data-points.repository';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import type { ForexFactoryEvent } from '@core/clients/forex-factory/types';
-import { mapEventToIndicator } from './forex-factory-event-mapping';
+import { resolveEvent } from './forex-factory-event-mapping';
 import { parseForexFactoryValue } from './forex-factory-value-parser';
+import { calendarEventsRepository } from '@core/repositories/calendar-events.repository';
 import { getPriorRateLevel, levelToBpsChange } from './rate-decision.helpers';
 
 const JOB_NAME = 'forex_factory_weekly_fetch';
@@ -20,12 +21,15 @@ export interface FetchForexFactoryResult {
   writtenWithActual: number;
   /** Mapped events persisted with forecast+previous but actual still pending. */
   writtenForecastOnly: number;
-  /** Mapped events skipped this run because no usable actual was published yet. */
+  /** Mapped events with no usable actual yet — no DataPoint written, event still stored. */
   mappedDeferredCount: number;
   unmappedCount: number;
   rowsInserted: number;
   rowsUpdated: number;
   rowsSkipped: number;
+  /** B3: calendar_events occurrences written this run (mapped AND unmapped). */
+  calendarInserted: number;
+  calendarUpdated: number;
   errors: unknown[];
   unmappedEvents: Array<{ title: string; country: string }>;
   /** Mapped events skipped this run (no usable actual yet) — surfaced so deferrals aren't silent. */
@@ -36,26 +40,122 @@ export interface MissingValueResolution {
   actual: number | null;
   forecast: number | null;
   previous: number | null;
-  skipEntireEvent: boolean;
+  /**
+   * B1: renamed from `skipEntireEvent`. A missing actual now means only that
+   * NO SCORE CAN BE COMPUTED — it never means the event is discarded. The
+   * occurrence is still stored in calendar_events with its date, forecast,
+   * previous and impact intact.
+   *
+   * Consumers must read this as "don't write a DataPoint", nothing more.
+   */
+  noActualYet: boolean;
 }
 
+/**
+ * Parse an event's three numeric fields.
+ *
+ * B1 — THE DISCARD BUG. This function previously returned all three values as
+ * null whenever `actual` was absent, throwing away a perfectly good forecast,
+ * previous and date. That was catastrophic in practice rather than in theory:
+ * ff_calendar_thisweek.json is a FORWARD schedule and omits the `actual` key
+ * entirely on unreleased events — a live 99-event fetch had zero events
+ * carrying `actual`. Every event therefore hit this branch, and
+ * `SELECT count(*) FROM data_points WHERE source = 'forex_factory'` was 0
+ * across the pipeline's whole lifetime.
+ *
+ * forecast and previous are now parsed and returned unconditionally. Only the
+ * DataPoint write is gated on a usable actual.
+ */
 export function detectMissingValues(event: ForexFactoryEvent): MissingValueResolution {
-  // Rule 1: `actual` omitted or empty → future release, skip entirely
-  if (event.actual === undefined || event.actual === '') {
-    return { actual: null, forecast: null, previous: null, skipEntireEvent: true };
-  }
-
-  // Rule 2: parse all three; nulls mean missing
-  const actual = parseForexFactoryValue(event.actual);
+  // Parse all three independently. A null on any one of them means only that
+  // that particular field was missing or unparseable.
   const forecast = parseForexFactoryValue(event.forecast);
   const previous = parseForexFactoryValue(event.previous);
 
-  // Rule 3: unusable actual → skip
-  if (actual === null) {
-    return { actual: null, forecast: null, previous: null, skipEntireEvent: true };
+  // `actual` omitted, empty, or unparseable → the release has not published a
+  // usable number yet. Scoring is deferred; the event itself is still stored.
+  if (event.actual === undefined || event.actual === '') {
+    return { actual: null, forecast, previous, noActualYet: true };
   }
 
-  return { actual, forecast, previous, skipEntireEvent: false };
+  const actual = parseForexFactoryValue(event.actual);
+  if (actual === null) {
+    return { actual: null, forecast, previous, noActualYet: true };
+  }
+
+  return { actual, forecast, previous, noActualYet: false };
+}
+
+export type FetchStatus = 'success' | 'partial' | 'failed';
+
+export interface RunStatusInputs {
+  totalEvents: number;
+  /** calendar_events rows inserted + updated this run. */
+  calendarRowsWritten: number;
+  mappedCount: number;
+  unmappedCount: number;
+  mappedDeferredCount: number;
+  errorCount: number;
+}
+
+/**
+ * B2 — decide a run's status from what it actually accomplished, not merely
+ * from whether anything threw.
+ *
+ * Pure so the rules are testable without a database or a live feed.
+ *
+ * Ordering is deliberate: a run that wrote nothing is failed even if nothing
+ * threw, because silent no-ops are precisely the failure this replaces.
+ */
+export function resolveRunStatus(i: RunStatusInputs): FetchStatus {
+  // The feed returned nothing at all. Not a parse error, but not a working
+  // pipeline either — a healthy week always has events.
+  if (i.totalEvents === 0) return 'failed';
+
+  // Events arrived and NONE were persisted. This is the exact shape of the
+  // five green-but-empty runs that motivated B2.
+  if (i.calendarRowsWritten === 0) return 'failed';
+
+  // Nothing resolved to an indicator at all — the mapping table has drifted
+  // completely away from the feed (a wholesale upstream rename, or a country
+  // key that no longer matches). Events are stored, so no data is lost, but
+  // the run has produced no scoreable output and must not read as healthy.
+  if (i.mappedCount === 0) return 'failed';
+
+  // Something threw mid-run: some events processed, some did not.
+  if (i.errorCount > 0) return 'partial';
+
+  // Unmapped events are expected in normal operation — the feed carries ~85
+  // events a week that no EdgeFinder indicator tracks (NZD, CHF, CAD prints,
+  // bond auctions, Fed speakers, and the deliberately-excluded euro-area
+  // national sub-PMIs). They are stored in the unmapped queue for admin
+  // review rather than treated as run failures. Deferrals are likewise
+  // normal: the feed is a forward schedule, so a mapped event with no actual
+  // yet is the common case, not an error.
+  //
+  // Both are surfaced as `partial` ONLY when they are total — i.e. when not a
+  // single mapped event could be scored. That distinguishes "a normal week"
+  // from "every release we track failed to publish", which warrants a look.
+  if (i.mappedDeferredCount === i.mappedCount) return 'partial';
+
+  return 'success';
+}
+
+/**
+ * The feed sends ISO-8601 with an explicit offset (uniformly -04:00 in
+ * observed data). `new Date()` parses that into the correct absolute instant,
+ * which is exactly what calendar_events stores — no local-time string ever
+ * touches the database, and the render layer converts to the viewer's zone.
+ *
+ * Distinct from parseForexFactoryDate below, which deliberately truncates to
+ * a UTC calendar date for DataPoint.observationDate.
+ */
+export function parseForexFactoryInstant(dateStr: string): Date {
+  const instant = new Date(dateStr);
+  if (Number.isNaN(instant.getTime())) {
+    throw new Error(`Invalid Forex Factory date: ${dateStr}`);
+  }
+  return instant;
 }
 
 export function parseForexFactoryDate(dateStr: string): Date {
@@ -149,6 +249,7 @@ async function ingestRegularEvent(
   resolved: MissingValueResolution,
   event: ForexFactoryEvent,
   logId: string,
+  variant: string | null,
 ): Promise<IngestOneOutcome> {
   if (resolved.actual === null) {
     return { action: 'skipped' };
@@ -159,6 +260,7 @@ async function ingestRegularEvent(
   const result = await dataPointsRepository.upsert({
     indicatorId,
     observationDate,
+    variant,
     value: resolved.actual,
     forecastValue: resolved.forecast,
     previousValue: resolved.previous,
@@ -171,6 +273,7 @@ async function ingestRegularEvent(
     {
       indicatorCode,
       observationDate: observationDate.toISOString(),
+      variant,
       value: resolved.actual,
       forecast: resolved.forecast,
       previous: resolved.previous,
@@ -202,6 +305,8 @@ export async function fetchForexFactoryWeek(
   let rowsInserted = 0;
   let rowsUpdated = 0;
   let rowsSkipped = 0;
+  let calendarInserted = 0;
+  let calendarUpdated = 0;
   const errors: unknown[] = [];
   const unmappedEvents: Array<{ title: string; country: string }> = [];
   const deferredEvents: Array<{ title: string; country: string; date: string }> = [];
@@ -212,8 +317,8 @@ export async function fetchForexFactoryWeek(
 
     const codes = new Set<string>();
     for (const event of fetchResult.events) {
-      const code = mapEventToIndicator(event.country, event.title);
-      if (code) codes.add(code);
+      const resolution = resolveEvent(event.country, event.title);
+      if (resolution) codes.add(resolution.code);
     }
     const indicators = codes.size
       ? await prisma.indicator.findMany({
@@ -224,8 +329,57 @@ export async function fetchForexFactoryWeek(
     const codeToId = new Map(indicators.map((i) => [i.code, i.id]));
 
     for (const event of fetchResult.events) {
-      const indicatorCode = mapEventToIndicator(event.country, event.title);
+      const resolution = resolveEvent(event.country, event.title);
+      const indicatorCode = resolution?.code ?? null;
+      const indicatorId = indicatorCode ? (codeToId.get(indicatorCode) ?? null) : null;
 
+      // ---------------------------------------------------------------
+      // B1/B3 — STORE THE OCCURRENCE FIRST, UNCONDITIONALLY.
+      //
+      // Every event is persisted to calendar_events before any decision
+      // about scoring: mapped or unmapped, actual present or absent. The
+      // feed is current-week-only (nextweek/lastweek both 404), so an event
+      // not captured while it is "this week" is lost permanently. Storage is
+      // therefore never contingent on whether we can score it.
+      //
+      // A failure here must not sink the whole run, so it is caught per
+      // event and recorded as an error (which B2 then reflects in status).
+      // ---------------------------------------------------------------
+      const resolved = detectMissingValues(event);
+
+      try {
+        const calendarResult = await calendarEventsRepository.upsert({
+          source: 'forex_factory',
+          country: event.country,
+          title: event.title,
+          scheduledAt: parseForexFactoryInstant(event.date),
+          impact: event.impact,
+          // Reference only — never read by scoring. See the model comment.
+          forecastRaw: event.forecast === '' ? null : event.forecast,
+          previousRaw: event.previous === '' ? null : event.previous,
+          actualRaw: event.actual === undefined || event.actual === '' ? null : event.actual,
+          indicatorId,
+          indicatorCode,
+          variant: resolution?.variant ?? null,
+          fetchedVia: log.id,
+        });
+        if (calendarResult.action === 'inserted') calendarInserted += 1;
+        else calendarUpdated += 1;
+      } catch (err) {
+        const payload = {
+          title: event.title,
+          country: event.country,
+          eventDate: event.date,
+          message: err instanceof Error ? err.message : String(err),
+        };
+        logger.error(payload, 'ForexFactory: failed to store calendar event');
+        errors.push(payload);
+      }
+
+      // ---------------------------------------------------------------
+      // Scoring path. Everything below decides whether a DataPoint is
+      // written; none of it can un-store the occurrence above.
+      // ---------------------------------------------------------------
       if (!indicatorCode) {
         unmappedCount += 1;
         unmappedEvents.push({ title: event.title, country: event.country });
@@ -241,7 +395,6 @@ export async function fetchForexFactoryWeek(
         continue;
       }
 
-      const indicatorId = codeToId.get(indicatorCode);
       if (!indicatorId) {
         rowsSkipped += 1;
         const payload = {
@@ -256,11 +409,11 @@ export async function fetchForexFactoryWeek(
 
       mappedCount += 1;
 
-      const resolved = detectMissingValues(event);
-      if (resolved.skipEntireEvent) {
-        // No usable actual yet — defer (don't write a row). Surface it so the
-        // deferral is visible (the twice-daily timing should pick up the actual
-        // on a later same-week run once the release publishes).
+      if (resolved.noActualYet) {
+        // No usable actual yet, so no score can be computed. The occurrence
+        // IS stored (above) with its date, forecast, previous and impact —
+        // this only defers the DataPoint write. A later same-week run picks
+        // up the actual once the release publishes.
         mappedDeferredCount += 1;
         deferredEvents.push({ title: event.title, country: event.country, date: event.date });
         logger.info(
@@ -272,7 +425,7 @@ export async function fetchForexFactoryWeek(
             date: event.date,
             impact: event.impact,
           },
-          'ForexFactory: deferred event (actual not published yet)',
+          'ForexFactory: deferred scoring (actual not published yet); event stored',
         );
         continue;
       }
@@ -298,6 +451,12 @@ export async function fetchForexFactoryWeek(
               resolved,
               event,
               log.id,
+              // B4: the release variant this feed string denotes (flash/final/
+              // prelim/...), or null for a single-release indicator. Keeps
+              // Flash and Final on separate rows for the same observationDate
+              // rather than one silently overwriting the other. Rate decisions
+              // have no variant ladder, so ingestRateDecision takes none.
+              resolution?.variant ?? null,
             );
 
         if (outcome.action === 'inserted') rowsInserted += 1;
@@ -319,7 +478,31 @@ export async function fetchForexFactoryWeek(
       }
     }
 
-    const status: 'success' | 'partial' = errors.length === 0 ? 'success' : 'partial';
+    // ---------------------------------------------------------------
+    // B2 — THE MONITORING LIE.
+    //
+    // Status was previously `errors.length === 0 ? 'success' : 'partial'`,
+    // which consulted only thrown exceptions. Rows-written, deferrals and
+    // unmapped events were all computed, written to metadata, and then
+    // ignored by the decision. The observable result: five consecutive cron
+    // runs reported `status=success` while writing 0 rows, mapping 15 of 99
+    // events and deferring all 15 — with zero forex_factory DataPoints in the
+    // database across the pipeline's entire lifetime. A green dashboard the
+    // whole time.
+    //
+    // Rows-written is now load-bearing. A run that persists nothing is a
+    // FAILURE regardless of whether anything threw, because "nothing threw"
+    // and "the job did its job" are different claims.
+    // ---------------------------------------------------------------
+    const calendarRowsWritten = calendarInserted + calendarUpdated;
+    const status: FetchStatus = resolveRunStatus({
+      totalEvents,
+      calendarRowsWritten,
+      mappedCount,
+      unmappedCount,
+      mappedDeferredCount,
+      errorCount: errors.length,
+    });
 
     await dataFetchLogRepository.complete({
       logId: log.id,
@@ -339,6 +522,8 @@ export async function fetchForexFactoryWeek(
         rowsInserted,
         rowsUpdated,
         rowsSkipped,
+        calendarInserted,
+        calendarUpdated,
         unmappedEvents,
         deferredEvents,
       },
@@ -356,6 +541,8 @@ export async function fetchForexFactoryWeek(
       rowsInserted,
       rowsUpdated,
       rowsSkipped,
+      calendarInserted,
+      calendarUpdated,
       errors,
       unmappedEvents,
       deferredEvents,
@@ -385,6 +572,8 @@ export async function fetchForexFactoryWeek(
         rowsInserted,
         rowsUpdated,
         rowsSkipped,
+        calendarInserted,
+        calendarUpdated,
         unmappedEvents,
         deferredEvents,
       },
@@ -402,6 +591,8 @@ export async function fetchForexFactoryWeek(
       rowsInserted,
       rowsUpdated,
       rowsSkipped,
+      calendarInserted,
+      calendarUpdated,
       errors: [errorPayload],
       unmappedEvents,
       deferredEvents,

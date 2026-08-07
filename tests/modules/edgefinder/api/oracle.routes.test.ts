@@ -102,6 +102,12 @@ vi.mock('@core/db/prisma', () => ({
     dataPoint: { findMany: vi.fn(), findFirst: vi.fn() },
     cotData: { findMany: vi.fn(), findFirst: vi.fn() },
     assetIndicatorMap: { findMany: vi.fn() },
+    indicatorVariant: { findMany: vi.fn().mockResolvedValue([]) },
+    // B1: the heatmap route now derives nextRelease from calendar_events via
+    // calendarEventsRepository.findNextByIndicatorCodes, which calls
+    // prisma.calendarEvent.findMany directly (see calendar-events.repository.ts).
+    // Empty by default — "no stored future event" is the common, honest case.
+    calendarEvent: { findMany: vi.fn().mockResolvedValue([]) },
   },
 }));
 
@@ -163,6 +169,24 @@ function makeXauScorecard() {
 }
 
 const mockedMap = prisma.assetIndicatorMap as unknown as Record<string, ReturnType<typeof vi.fn>>;
+
+/**
+ * A fixture observationDate that stays "recent" (well under isAging's flat
+ * 60-day tolerance) regardless of when the suite actually runs.
+ *
+ * Previously these three fixtures hardcoded new Date('2026-05-10'). That
+ * drifted past 60 days old with real wall-clock time and started tripping
+ * isAging — a test asserting outcome==='scored' started receiving
+ * outcome==='aging' purely because time had passed, with no code change on
+ * either side. Rooted in `now` instead so the suite's own passage of time
+ * can never make it flaky again.
+ */
+function recentObservationDate(): Date {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 10);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -350,7 +374,7 @@ describe('GET /api/oracle/scorecard', () => {
     mockedIndicator.findMany.mockResolvedValue([{ id: 'ind-cpi', code: 'US_CPI_YOY', name: 'CPI YoY' }]);
     mockedDataPoint.findMany.mockResolvedValue([{
       indicatorId: 'ind-cpi',
-      observationDate: new Date('2026-05-10'),
+      observationDate: recentObservationDate(),
       value: '3.5',
       forecastValue: '3.4',
       previousValue: '3.2',
@@ -429,7 +453,7 @@ describe('GET /api/oracle/scorecard', () => {
     mockedIndicator.findMany.mockResolvedValue([{ id: 'ind-cpi', code: 'US_CPI_YOY', name: 'CPI YoY' }]);
     mockedDataPoint.findMany.mockResolvedValue([{
       indicatorId: 'ind-cpi',
-      observationDate: new Date('2026-05-10'),
+      observationDate: recentObservationDate(),
       value: '3.5',
       forecastValue: '3.4',
       previousValue: '3.2',
@@ -652,7 +676,7 @@ describe('GET /api/oracle/heatmap', () => {
     mockedAsset.findMany.mockResolvedValue([{ id: 'asset-USD', code: 'USD' }]);
     mockedDataPoint.findMany.mockResolvedValue([{
       indicatorId: 'ind-cpi',
-      observationDate: new Date('2026-05-10'),
+      observationDate: recentObservationDate(),
       value: '3.5',
       forecastValue: '3.4',
       previousValue: '3.2',
@@ -734,7 +758,14 @@ describe('GET /api/oracle/heatmap', () => {
     expect(row.outcome).toBe('insufficient_data');
   });
 
-  it('returns outcome=stale when indicator has data older than 60 days', async () => {
+  it('returns outcome=aging when indicator has data older than 60 days', async () => {
+    // Renamed from isStale/outcome='stale' — see isAging's header comment in
+    // oracle-mappers.ts. This is a genuinely old date (>60 days before ANY
+    // plausible test run), unlike recentObservationDate() above, which
+    // deliberately stays fresh — this test exists specifically to exercise
+    // the aging path, so it must not use that helper.
+    const longAgo = new Date();
+    longAgo.setUTCDate(longAgo.getUTCDate() - 90);
     mockedIndicator.findMany.mockResolvedValue([
       { id: 'ind-cpi', code: 'US_CPI_YOY', name: 'CPI YoY', country: 'US', uiGroup: 'Inflation', frequency: 'monthly', isActive: true },
     ]);
@@ -742,7 +773,7 @@ describe('GET /api/oracle/heatmap', () => {
     mockedAsset.findMany.mockResolvedValue([{ id: 'asset-USD', code: 'USD' }]);
     mockedDataPoint.findMany.mockResolvedValue([{
       indicatorId: 'ind-cpi',
-      observationDate: new Date('2025-01-01'), // >60 days ago
+      observationDate: longAgo, // >60 days ago
       value: '3.1',
       forecastValue: '3.0',
       previousValue: '2.9',
@@ -759,9 +790,9 @@ describe('GET /api/oracle/heatmap', () => {
 ;
 
     const row = res.body.data.US[0];
-    expect(row.outcome).toBe('stale');
-    expect(row.stale).toBe(true);
-    expect(row.score).toBe(1); // score is still populated for stale
+    expect(row.outcome).toBe('aging');
+    expect(row.aging).toBe(true);
+    expect(row.score).toBe(1); // score is still populated when aging
     expect(row.actual).toBe('3.1%');
   });
 });

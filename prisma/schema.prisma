@@ -150,10 +150,13 @@ model Indicator {
   createdAt      DateTime           @default(now()) @map("created_at")
   updatedAt      DateTime           @updatedAt @map("updated_at")
 
-  scoringRules ScoringRule[]
-  dataPoints   DataPoint[]
-  scores       Score[]
-  assetMaps    AssetIndicatorMap[]
+  scoringRules   ScoringRule[]
+  dataPoints     DataPoint[]
+  scores         Score[]
+  assetMaps      AssetIndicatorMap[]
+  variants       IndicatorVariant[]
+  calendarEvents CalendarEvent[]
+  deferrals      CalendarEventDeferral[]
 
   @@index([tool, isActive])
   @@index([dataSource, frequency])
@@ -203,6 +206,17 @@ model DataPoint {
   id              String           @id @default(uuid())
   indicatorId     String           @map("indicator_id")
   observationDate DateTime         @map("observation_date") @db.Date
+  // Release variant (Flash/Final, Advance/Second/Third, Prelim/Final, ...).
+  // Null = single-release indicator, the common case. Allowed values per
+  // indicator are data (see IndicatorVariant), never a hardcoded enum here —
+  // a new release type must never require a code change.
+  variant         String?          @db.VarChar(20)
+  // True only for rows that existed on a multi-variant indicator before
+  // variants existed. Set once, at migration time, never inferred which
+  // variant they actually were (precedent: deprecated IND_NIFTY_03_CPI rows,
+  // 2025 AUD discontinuity flags — flag and leave alone). Never set on rows
+  // written after variants exist; those always carry a real variant or null.
+  isLegacyVariant Boolean          @default(false) @map("is_legacy_variant")
   value           Decimal          @db.Decimal(20, 6)
   forecastValue   Decimal?         @map("forecast_value") @db.Decimal(20, 6)
   previousValue   Decimal?         @map("previous_value") @db.Decimal(20, 6)
@@ -220,11 +234,203 @@ model DataPoint {
   fetchLog  DataFetchLog? @relation(fields: [fetchedVia], references: [id])
   scores    Score[]
 
-  @@unique([indicatorId, observationDate, vintageDate])
+  // variant participates so Flash and Final can coexist on the same
+  // observationDate. Prisma treats NULL as distinct per-row in a unique
+  // index (Postgres semantics), so single-release indicators (variant always
+  // null) keep exactly the same collision behaviour as before this migration.
+  @@unique([indicatorId, observationDate, variant, vintageDate])
   @@index([indicatorId, observationDate(sort: Desc)])
   @@index([vintageDate(sort: Desc)])
   @@index([source, createdAt(sort: Desc)])
+  // Hot path for B3's scoring resolution: latest release regardless of
+  // variant. isCurrent narrows to one row per (indicator, observationDate,
+  // variant); ordering the remainder by observationDate then variant is done
+  // in application code since variant ordinal (the real tiebreaker) lives in
+  // IndicatorVariant, not as a sortable column on this row.
+  @@index([indicatorId, isCurrent, observationDate(sort: Desc)], map: "data_points_indicator_current_date_idx")
   @@map("data_points")
+}
+
+// Registry of allowed release variants per indicator, and each variant's
+// ordinal (Flash 1 / Final 2, Advance 1 / Second 2 / Third 3, ...). Data, not
+// an application-code enum: adding a new release type for an indicator is a
+// row insert here, never a code change. Absence of any row for an indicator
+// means that indicator is single-release (DataPoint.variant stays null).
+model IndicatorVariant {
+  id          String   @id @default(uuid())
+  indicatorId String   @map("indicator_id")
+  variant     String   @db.VarChar(20)
+  // Release order within the indicator's ladder. Primary tiebreaker for B3's
+  // scoring resolution — a property of the release itself, independent of
+  // when it happened to be entered (vintageDate, entry order).
+  ordinal     Int      @db.SmallInt
+  // Finals-only is the sane default history view for a Flash/Final pair (see
+  // B5); GDP-style ladders (Advance/Second/Third, Prelim/Final) default to
+  // showing every rung since each one moves meaningfully. Derived from this
+  // column, never a hardcoded indicator list in frontend/backend code.
+  isFinal     Boolean  @default(false) @map("is_final")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  indicator Indicator @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+
+  @@unique([indicatorId, variant])
+  @@unique([indicatorId, ordinal])
+  @@index([indicatorId])
+  @@map("indicator_variants")
+}
+
+// One row per SCHEDULED EVENT OCCURRENCE from the Forex Factory calendar.
+//
+// Distinct from DataPoint on purpose. DataPoint models an OBSERVATION that
+// feeds scoring — it requires a value and is keyed by observationDate.
+// CalendarEvent models the RELEASE SCHEDULE: when a print is due, what it
+// will be, and whether an actual has landed yet. An event exists here from
+// the moment it is announced, long before any number is published.
+//
+// Retention is permanent. The feed is current-week-only (ff_calendar_
+// nextweek.json and _lastweek.json both 404), so a week that is not stored
+// while it is "this week" is lost with no way to re-fetch it. Nothing in
+// this table is ever pruned.
+model CalendarEvent {
+  id String @id @default(uuid())
+
+  // ---- Identity (the natural key) ------------------------------------
+  // Sourced verbatim from the feed. `country` is FF's value, which is a
+  // CURRENCY code (CNY, AUD), not the ISO country code Indicator.country
+  // stores (CN, AU) — they are deliberately not reconciled here so the key
+  // stays a faithful record of what upstream sent.
+  source    String   @default("forex_factory") @db.VarChar(30)
+  country   String   @db.VarChar(8)
+  title     String   @db.VarChar(200)
+  // The UTC INSTANT of the release. The feed sends ISO-8601 with a -04:00
+  // offset; ingest converts to UTC and stores that. Never a local-time
+  // string, and never a bare date — every observed event carries a real
+  // time component (verified: 0 of 99 events at T00:00:00, 46 distinct
+  // clock times). Rendering converts back to the viewer's timezone.
+  scheduledAt DateTime @map("scheduled_at")
+
+  // ---- Payload -------------------------------------------------------
+  impact String @db.VarChar(16)
+  // Stored UNCONDITIONALLY, including when `actual` is absent — an event
+  // with no actual yet is a scheduled release, not a discardable row.
+  //
+  // REFERENCE ONLY. `forecast` is Forex Factory's own consensus, which is
+  // considered unreliable; the user enters forecasts manually from Trading
+  // Economics. NO SCORING PATH MAY EVER READ THIS COLUMN. It exists so a
+  // future cross-check can compare the two sources — reading it into the
+  // surprise calculation would corrupt every score derived from it.
+  forecastRaw String? @map("forecast_raw") @db.VarChar(40)
+  previousRaw String? @map("previous_raw") @db.VarChar(40)
+  // Null until the release publishes. Populated on a later same-week run.
+  actualRaw   String? @map("actual_raw") @db.VarChar(40)
+
+  // ---- Resolution ----------------------------------------------------
+  // Null indicatorId = unmapped: the (country, title) pair matched no entry
+  // in FF_EVENT_TO_INDICATOR. These rows ARE the admin unmapped queue — an
+  // upstream rename surfaces as a queue entry, never as a silent gap.
+  indicatorId   String? @map("indicator_id")
+  // Denormalised so the unmapped queue and the calendar list render without
+  // a join, and so a resolution that later changes is visibly historical.
+  indicatorCode String? @map("indicator_code") @db.VarChar(50)
+  // The registered release variant (flash/final/prelim/...) this occurrence
+  // denotes, or null for a single-release indicator. Mirrors DataPoint.variant.
+  variant       String? @map("variant") @db.VarChar(20)
+
+  firstSeenAt DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt  DateTime @updatedAt @map("last_seen_at")
+  fetchedVia  String?  @map("fetched_via")
+
+  // indicatorId is nullable BY DESIGN — null IS the unmapped queue. The FK is
+  // still declared so a non-null value can never point at a deleted indicator.
+  indicator Indicator?    @relation(fields: [indicatorId], references: [id], onDelete: SetNull)
+  fetchLog  DataFetchLog? @relation(fields: [fetchedVia], references: [id], onDelete: SetNull)
+
+  // Re-fetching the same event UPDATES rather than duplicates. The feed is
+  // pulled twice daily and every run re-sends the whole week, so this key is
+  // load-bearing: without it each event would be inserted ~14 times.
+  //
+  // scheduledAt participates because Forex Factory reschedules events — a
+  // moved release is genuinely a different occurrence, and collapsing the two
+  // would lose the original slot. A rescheduled event therefore appears as a
+  // new row; that is intended.
+  @@unique([source, country, title, scheduledAt], name: "calendar_event_natural_key")
+  // Hot path: the calendar page's "today + rest of this week" window.
+  @@index([scheduledAt])
+  // Serves both the per-indicator lookup and the admin unmapped queue: the
+  // queue is indicatorId IS NULL ordered by scheduledAt, which this same
+  // index satisfies (Postgres indexes NULLs in a btree).
+  @@index([indicatorId, scheduledAt(sort: Desc)])
+  deferrals CalendarEventDeferral[]
+  @@map("calendar_events")
+}
+
+// B2 — deferral (snooze) state for an OVERDUE calendar event. Never a
+// suppression: entering data for the indicator+variant+date the event
+// resolves to clears the row regardless of deferral state (see
+// clearDeferralsForEntry in overdue-resolver.ts). This table only ever
+// silences the badge/list surfacing of an overdue event; it never changes
+// whether the event IS overdue (that remains purely a function of
+// scheduledAt + DataPoint presence).
+//
+// Two shapes, distinguished by calendarEventId:
+//   - NOT NULL: a one-off deferral of exactly that occurrence.
+//   - NULL: a STANDING deferral of (indicatorId, variant) — "also apply to
+//     future releases of the same indicator" from B2. Matches any future
+//     overdue event for that indicator+variant until revoked, not just the
+//     one being deferred when it was created. indicatorId is therefore
+//     required in this shape; variant may be null (single-release indicator).
+model CalendarEventDeferral {
+  id String @id @default(uuid())
+
+  // Null = standing deferral (see model doc above). The FK is intentionally
+  // NOT onDelete:Cascade — a deferred event is exactly the kind of row an
+  // admin might want history on even if the calendar_events row it pointed
+  // at were ever purged, so a cascade-delete would silently erase deferral
+  // history it shouldn't. In practice calendar_events rows are never deleted
+  // (see that model's retention note), so this is a belt-and-braces choice
+  // rather than one this schema expects to be exercised.
+  calendarEventId String?        @map("calendar_event_id")
+  calendarEvent   CalendarEvent? @relation(fields: [calendarEventId], references: [id])
+
+  // Required on EVERY row (both shapes) — a standing deferral has no
+  // calendarEventId to derive it from, so it must be stored directly.
+  indicatorId String     @map("indicator_id")
+  indicator   Indicator  @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+  // Denormalised alongside indicatorId for the same reason CalendarEvent
+  // denormalises indicatorCode: list/badge queries read it without a join.
+  indicatorCode String   @map("indicator_code") @db.VarChar(50)
+  variant       String?  @db.VarChar(20)
+
+  // Null = deferred indefinitely (B2). Non-null = deferred to a date; the
+  // deferral itself expires and the event returns to overdue once
+  // deferUntil passes — enforced by the resolver reading this column at
+  // query time, not by a background job (this repo runs no deferral-expiry
+  // cron; "derived on read" per this prompt's own constraint).
+  deferUntil DateTime? @map("defer_until") @db.Date
+
+  // Prompted but optional at entry; never required to defer.
+  reason String? @db.VarChar(280)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  createdBy String?  @map("created_by")
+
+  // A standing deferral only makes sense once per (indicator, variant) — a
+  // second standing deferral for the same pair would just be an update, not
+  // a new row, and the resolver only needs to find the newest anyway.
+  //
+  // Enforced with a PARTIAL unique index in raw SQL
+  // (calendar_event_deferrals_standing_unique, WHERE calendar_event_id IS
+  // NULL) rather than a Prisma @@unique, because Prisma's schema DSL has no
+  // partial-unique syntax and the constraint must NOT apply to one-off
+  // deferrals — two one-off deferrals of two different events must both be
+  // allowed to exist. This is expected, permanent drift between this file
+  // and the live schema: `prisma migrate dev`/`db pull` will not see the
+  // partial index reflected here. Do not attempt to "fix" it by adding a
+  // non-partial @@unique — that would incorrectly block a second concurrent
+  // one-off deferral.
+  @@index([calendarEventId])
+  @@index([indicatorId, variant])
+  @@map("calendar_event_deferrals")
 }
 
 model DataFetchLog {
@@ -244,7 +450,8 @@ model DataFetchLog {
   errors         Json?
   metadata       Json?
 
-  dataPoints DataPoint[]
+  dataPoints     DataPoint[]
+  calendarEvents CalendarEvent[]
 
   @@index([jobName, startedAt(sort: Desc)])
   @@index([status, startedAt(sort: Desc)])

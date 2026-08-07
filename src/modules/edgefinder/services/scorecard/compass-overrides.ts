@@ -149,22 +149,18 @@ export function computeCompassOverridesForAsset(
   // covered automatically and no future index needs a code change here.
   // Trigger condition, indicators touched and magnitude are otherwise unchanged.
   //
-  // Phase 5: US_UNEMP is excluded here, at the read site — NOT removed from
-  // US_JOBS_CODES, which is shared with Override 4 (USD) above, where UNEMP's
-  // currency polarity (+1, uninverted) composes correctly and must not change.
-  // US_UNEMP is `inverted` at the rule layer with -1 index polarity, so a
-  // composed -1 means unemployment printed BELOW forecast — a STRONG labour
-  // print, not a miss. Override 1's premise is "weak jobs data is a dovish
-  // catalyst"; doubling a strong UNEMP print into +2 bullish applies that
-  // premise backwards. The other four members (NFP/ADP/JOLTS/JOBLESS_CLAIMS)
-  // are unaffected — JOBLESS_CLAIMS in particular is also `inverted` but
-  // carries +1 index polarity, so its composed sign already matches the
-  // override's premise and it was never part of this defect.
+  // US_UNEMP participates here, along with all four other US_JOBS_CODES
+  // members. It was previously skipped at this read site because index
+  // polarity was -1, which made a composed -1 mean unemployment printed BELOW
+  // forecast — a STRONG print, which this override would then have doubled in
+  // the bullish direction, backwards. Index polarity is now +1, so a composed
+  // -1 on US_UNEMP means unemployment printed HIGHER than forecast: genuinely
+  // weak labour data, exactly what this override exists to double during
+  // Risk-Off. All five labour codes are now read uniformly.
   if (assetClass === 'index' && gate.regimePathRiskOff) {
     const affected: string[] = [];
     let adj = 0;
     for (const ind of indicatorScores) {
-      if (ind.indicatorCode === 'US_UNEMP') continue;
       if (US_JOBS_CODES.has(ind.indicatorCode) && ind.baseScore === -1) {
         adj += 2;
         affected.push(ind.indicatorCode);

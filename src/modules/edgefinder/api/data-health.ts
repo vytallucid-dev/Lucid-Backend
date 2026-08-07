@@ -52,10 +52,14 @@ export async function buildDataHealth(
     select: {
       code: true,
       frequency: true,
+      // Not take:1 — an indicator can now have more than one isCurrent row
+      // on its latest observationDate (Flash + Final coexisting). Staleness
+      // only needs the most recent DATE (which release doesn't matter for
+      // "how long since anything printed"), so take every current row and
+      // reduce to max(observationDate) below rather than trusting row order.
       dataPoints: {
         where: { isCurrent: true },
         orderBy: { observationDate: 'desc' },
-        take: 1,
         select: { observationDate: true },
       },
     },
@@ -68,7 +72,10 @@ export async function buildDataHealth(
     // A code with no usable score is already counted as insufficient; reporting
     // it as stale as well would double-count the same gap.
     if (insufficient.has(ind.code)) continue;
-    const latest = ind.dataPoints[0]?.observationDate;
+    const latest = ind.dataPoints.reduce<Date | undefined>(
+      (max, dp) => (!max || dp.observationDate > max ? dp.observationDate : max),
+      undefined,
+    );
     if (!latest) continue;
     const daysSince = daysBetween(latest, asOf);
     const severity = classifySeverity(daysSince, ind.frequency);

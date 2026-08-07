@@ -16,6 +16,12 @@ export const ManualDataEntrySchema = z.object({
   // Additive: when omitted the POST behaves exactly as before. Set true to
   // acknowledge a detected previous↔stored-actual mismatch and write anyway.
   confirmRevision: z.boolean().optional(),
+  // Release variant (Flash/Final, Advance/Second/Third, ...). Required only
+  // where the indicator has more than one registered release type — the
+  // service validates against IndicatorVariant and rejects a missing/unknown
+  // variant with 400. Omitted/null for single-release indicators, which is
+  // every indicator not on the variant list and must stay the common case.
+  variant: z.string().min(1).max(20).nullable().optional(),
 });
 
 export async function manualDataEntryHandler(
@@ -31,8 +37,16 @@ export async function manualDataEntryHandler(
       });
     }
 
-    const { indicatorCode, observationDate, actual, forecast, previous, notes, confirmRevision } =
-      parsed.data;
+    const {
+      indicatorCode,
+      observationDate,
+      actual,
+      forecast,
+      previous,
+      notes,
+      confirmRevision,
+      variant,
+    } = parsed.data;
 
     const obsDate = new Date(`${observationDate}T00:00:00.000Z`);
     if (Number.isNaN(obsDate.getTime())) {
@@ -68,6 +82,7 @@ export async function manualDataEntryHandler(
       notes: notes ?? null,
       triggeredBy,
       confirmRevision,
+      variant: variant ?? null,
     });
 
     // Revision gate: the submitted previous differs from the last stored actual
@@ -91,6 +106,7 @@ export async function manualDataEntryHandler(
       action: result.action,
       indicator: result.indicator,
       observationDate: result.observationDate.toISOString().slice(0, 10),
+      variant: result.variant,
       value: result.value,
       isRateDecision: result.isRateDecision,
       ...(result.rateLevel !== undefined ? { rateLevel: result.rateLevel } : {}),

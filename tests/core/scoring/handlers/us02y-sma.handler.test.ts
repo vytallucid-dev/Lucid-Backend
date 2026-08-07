@@ -3,6 +3,12 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 vi.mock('@core/db/prisma', () => ({
   prisma: {
     dataPoint: { findMany: vi.fn() },
+    // findLatestReleasesWindow also resolves variant ordinals via
+    // getOrdinalMap. Empty here is correct for every fixture in this file —
+    // none registers variants (and mockRows never returns two same-date
+    // rows), so ordinalOf falls back to -1 for all rows regardless and the
+    // per-date bucket in findLatestReleasesWindow is always singleton.
+    indicatorVariant: { findMany: vi.fn().mockResolvedValue([]) },
   },
 }));
 

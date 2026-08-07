@@ -11,6 +11,8 @@ import { adminDataRouter } from '@modules/edgefinder/routes/admin-data.routes';
 import { cycleStancesRouter } from '@modules/edgefinder/routes/cycle-stances.routes';
 import { adminIndicatorsRouter } from '@modules/edgefinder/api/admin-indicators.routes';
 import { adminValidationRouter } from '@modules/edgefinder/api/admin-validation.routes';
+import { adminCalendarRouter } from '@modules/edgefinder/routes/admin-calendar.routes';
+import { adminOverdueRouter } from '@modules/edgefinder/routes/admin-overdue.routes';
 
 export const adminRouter = Router();
 
@@ -32,3 +34,5 @@ adminRouter.use('/scoring', scoringRouter);
 adminRouter.use('/scorecard', scorecardRouter);
 adminRouter.use('/logs', adminLogsRouter);
 adminRouter.use('/compass/validation', adminValidationRouter);
+adminRouter.use('/calendar', adminCalendarRouter);
+adminRouter.use('/overdue', adminOverdueRouter);

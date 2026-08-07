@@ -8,6 +8,14 @@ vi.mock('@core/db/prisma', () => ({
   },
 }));
 
+// B3: every event is now stored in calendar_events before any scoring
+// decision, so the ingest loop touches this repository once per event.
+vi.mock('@core/repositories/calendar-events.repository', () => ({
+  calendarEventsRepository: {
+    upsert: vi.fn(),
+  },
+}));
+
 vi.mock('@core/clients/forex-factory/forex-factory.client', () => ({
   forexFactoryClient: { getCalendarWeek: vi.fn() },
 }));
@@ -29,10 +37,13 @@ import { prisma } from '@core/db/prisma';
 import { forexFactoryClient } from '@core/clients/forex-factory/forex-factory.client';
 import { dataPointsRepository } from '@core/repositories/data-points.repository';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
+import { calendarEventsRepository } from '@core/repositories/calendar-events.repository';
 import {
   detectMissingValues,
   parseForexFactoryDate,
+  parseForexFactoryInstant,
   fetchForexFactoryWeek,
+  resolveRunStatus,
 } from '@modules/edgefinder/services/forex-factory-indicator.service';
 
 const mockedFindMany = prisma.indicator.findMany as unknown as ReturnType<typeof vi.fn>;
@@ -41,6 +52,7 @@ const mockedGetCalendar = forexFactoryClient.getCalendarWeek as unknown as Retur
 const mockedUpsert = dataPointsRepository.upsert as unknown as ReturnType<typeof vi.fn>;
 const mockedLogStart = dataFetchLogRepository.start as unknown as ReturnType<typeof vi.fn>;
 const mockedLogComplete = dataFetchLogRepository.complete as unknown as ReturnType<typeof vi.fn>;
+const mockedCalendarUpsert = calendarEventsRepository.upsert as unknown as ReturnType<typeof vi.fn>;
 
 function makeEvent(partial: Partial<ForexFactoryEvent>): ForexFactoryEvent {
   const base: ForexFactoryEvent = {
@@ -59,22 +71,33 @@ function makeEvent(partial: Partial<ForexFactoryEvent>): ForexFactoryEvent {
 }
 
 describe('detectMissingValues (Forex Factory)', () => {
-  it('skips entire event when actual is undefined (future release)', () => {
+  // B1 — the discard bug. A missing `actual` now means only "no score can be
+  // computed"; forecast and previous survive and the event is still stored.
+  // The old behaviour nulled all three, which mattered enormously in practice:
+  // the feed is a forward schedule that omits `actual` entirely on unreleased
+  // events, so every event took this branch and the pipeline wrote nothing.
+
+  it('defers scoring when actual is undefined, but RETAINS forecast/previous', () => {
     const ev = makeEvent({ forecast: '3.5%', previous: '3.2%' });
     const result = detectMissingValues(ev);
-    expect(result.skipEntireEvent).toBe(true);
+    expect(result.noActualYet).toBe(true);
+    expect(result.actual).toBeNull();
+    expect(result.forecast).toBe(3.5);
+    expect(result.previous).toBe(3.2);
   });
 
-  it('skips entire event when actual is empty string', () => {
+  it('defers scoring when actual is empty string, but RETAINS forecast/previous', () => {
     const ev = makeEvent({ actual: '', forecast: '3.5%', previous: '3.2%' });
     const result = detectMissingValues(ev);
-    expect(result.skipEntireEvent).toBe(true);
+    expect(result.noActualYet).toBe(true);
+    expect(result.forecast).toBe(3.5);
+    expect(result.previous).toBe(3.2);
   });
 
   it('parses all three values when all present', () => {
     const ev = makeEvent({ actual: '3.4%', forecast: '3.5%', previous: '3.2%' });
     const result = detectMissingValues(ev);
-    expect(result.skipEntireEvent).toBe(false);
+    expect(result.noActualYet).toBe(false);
     expect(result.actual).toBe(3.4);
     expect(result.forecast).toBe(3.5);
     expect(result.previous).toBe(3.2);
@@ -83,16 +106,86 @@ describe('detectMissingValues (Forex Factory)', () => {
   it('handles empty forecast but valid actual', () => {
     const ev = makeEvent({ actual: '3.4%', forecast: '', previous: '3.2%' });
     const result = detectMissingValues(ev);
-    expect(result.skipEntireEvent).toBe(false);
+    expect(result.noActualYet).toBe(false);
     expect(result.actual).toBe(3.4);
     expect(result.forecast).toBeNull();
     expect(result.previous).toBe(3.2);
   });
 
-  it('skips when actual is unparseable', () => {
+  it('defers scoring when actual is unparseable, but RETAINS forecast/previous', () => {
     const ev = makeEvent({ actual: 'abc', forecast: '3.5%', previous: '3.2%' });
     const result = detectMissingValues(ev);
-    expect(result.skipEntireEvent).toBe(true);
+    expect(result.noActualYet).toBe(true);
+    expect(result.actual).toBeNull();
+    expect(result.forecast).toBe(3.5);
+  });
+});
+
+describe('B2: resolveRunStatus', () => {
+  const base = {
+    totalEvents: 99,
+    calendarRowsWritten: 99,
+    mappedCount: 18,
+    unmappedCount: 81,
+    mappedDeferredCount: 5,
+    errorCount: 0,
+  };
+
+  it('FAILS a run that stored nothing — the exact historical bug shape', () => {
+    // Five consecutive real cron runs reported success with these numbers
+    // while writing zero rows and leaving the database empty.
+    expect(
+      resolveRunStatus({
+        totalEvents: 99,
+        calendarRowsWritten: 0,
+        mappedCount: 15,
+        unmappedCount: 84,
+        mappedDeferredCount: 15,
+        errorCount: 0,
+      }),
+    ).toBe('failed');
+  });
+
+  it('fails on an empty feed', () => {
+    expect(resolveRunStatus({ ...base, totalEvents: 0, calendarRowsWritten: 0, mappedCount: 0 })).toBe('failed');
+  });
+
+  it('fails when nothing mapped at all (wholesale upstream drift)', () => {
+    expect(resolveRunStatus({ ...base, mappedCount: 0, mappedDeferredCount: 0 })).toBe('failed');
+  });
+
+  it('is partial when errors occurred mid-run', () => {
+    expect(resolveRunStatus({ ...base, errorCount: 3 })).toBe('partial');
+  });
+
+  it('is partial when every mapped event was deferred', () => {
+    expect(resolveRunStatus({ ...base, mappedDeferredCount: base.mappedCount })).toBe('partial');
+  });
+
+  it('succeeds on a healthy run', () => {
+    expect(resolveRunStatus(base)).toBe('success');
+  });
+
+  it('does NOT degrade a healthy run merely because unmapped events exist', () => {
+    // ~80 unmapped events a week is normal: untracked releases, bond
+    // auctions, Fed speakers, and the deliberately-excluded sub-PMIs.
+    expect(resolveRunStatus({ ...base, unmappedCount: 81, mappedDeferredCount: 0 })).toBe('success');
+  });
+});
+
+describe('parseForexFactoryInstant', () => {
+  it('converts the feed offset to the correct UTC instant', () => {
+    // B3 stores the absolute instant, never a local-time string.
+    expect(parseForexFactoryInstant('2026-08-02T21:45:00-04:00').toISOString()).toBe(
+      '2026-08-03T01:45:00.000Z',
+    );
+    expect(parseForexFactoryInstant('2026-05-21T08:30:00-04:00').toISOString()).toBe(
+      '2026-05-21T12:30:00.000Z',
+    );
+  });
+
+  it('throws on invalid date strings', () => {
+    expect(() => parseForexFactoryInstant('not a date')).toThrow();
   });
 });
 
@@ -113,6 +206,8 @@ describe('fetchForexFactoryWeek', () => {
     mockedLogStart.mockResolvedValue({ id: 'log-1' });
     mockedLogComplete.mockResolvedValue(undefined);
     mockedFindFirst.mockResolvedValue(null);
+    // Every event now goes through calendar storage first (B3).
+    mockedCalendarUpsert.mockResolvedValue({ action: 'inserted', event: {} });
   });
 
   it('upserts a mapped regular event with parsed actual/forecast/previous', async () => {

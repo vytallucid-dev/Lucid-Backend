@@ -1,5 +1,5 @@
-import { prisma } from '@core/db/prisma';
 import { ScoringContext, ScoringResult, Score } from '../types';
+import { findLatestReleasesWindow } from '../helpers/latest-release';
 
 // A day-over-day comparison of a 21-day SMA is damped ~21x versus the raw
 // series (only 1 of 21 window points changes per day), so a 1bp dead-band
@@ -19,15 +19,7 @@ export async function us02ySmaHandler(ctx: ScoringContext): Promise<ScoringResul
   };
   const flatBand = rule.flat_band_bp;
 
-  const rows = await prisma.dataPoint.findMany({
-    where: {
-      indicatorId: ctx.indicatorId,
-      isCurrent: true,
-      observationDate: { lte: ctx.observationDate },
-    },
-    orderBy: { observationDate: 'desc' },
-    take: REQUIRED_DATA_POINTS,
-  });
+  const rows = await findLatestReleasesWindow(ctx.indicatorId, ctx.observationDate, REQUIRED_DATA_POINTS);
 
   if (rows.length < REQUIRED_DATA_POINTS) {
     return {

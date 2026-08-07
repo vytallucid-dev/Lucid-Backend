@@ -112,9 +112,20 @@ export interface ScorecardIndicator {
   previous: string | null;
   surprise: string | null;
   score: 1 | 0 | -1 | null;
-  outcome: 'scored' | 'insufficient_data' | 'stale';
+  // 'aging' — renamed from 'stale'. Flat 60-day observationDate tolerance,
+  // value-driven. Independent of `overdue` below: an indicator can be aging
+  // without being overdue (old value, nothing newly due) or overdue without
+  // aging (a Flash just printed, three weeks ago, but Final missed its slot
+  // yesterday). Never conflate the two into one marker — see the comment on
+  // isAging in oracle-mappers.ts for why this codebase keeps them separate.
+  outcome: 'scored' | 'insufficient_data' | 'aging';
   reason: string | null;
-  staleDate?: string;
+  agingDate?: string;
+  // B1 — event-driven, per-variant: true when this indicator has at least
+  // one overdue calendar event (a scheduled release >24h past with no
+  // matching DataPoint). Independent of `outcome`/`aging` above. Absent
+  // (undefined) rather than false when not overdue, matching `aging`'s shape.
+  overdue?: boolean;
 }
 
 export interface ScorecardSection {
@@ -192,20 +203,43 @@ export interface CotAsset {
 export type EconomyKey = string;
 export type HeatmapFrequency = 'Monthly' | 'Quarterly' | 'Weekly' | 'Daily';
 
+/**
+ * The next scheduled occurrence for an indicator, sourced from a stored
+ * calendar_events row — never computed from cadence. `variant` carries the
+ * release rung (flash/final/prelim/...) when the indicator has a registered
+ * ladder; null for a single-release indicator, where there is nothing to
+ * disambiguate. `scheduledAt` is the raw UTC instant so the frontend formats
+ * it (locale, relative time, etc.) rather than receiving a pre-baked string —
+ * no value here is computed twice.
+ */
+export interface NextReleaseInfo {
+  scheduledAt: string; // ISO-8601 UTC instant
+  variant: string | null;
+}
+
 export interface HeatmapIndicator {
+  code: string;
   name: string;
   frequency: HeatmapFrequency;
   category: 'ECONOMIC GROWTH' | 'INFLATION' | 'JOBS MARKET';
-  lastRelease: string;  // "Mar 27, 2026" or "Daily"
-  nextRelease: string;  // "Jun 26, 2026" or "Daily" or "—"
+  lastRelease: string;  // "Mar 27, 2026" or "Daily" — unchanged, still the DataPoint's observationDate
+  // Null when no future calendar_events row is stored for this indicator —
+  // the common case, since the feed is current-week-only. Never a fabricated
+  // date. See B1 in the ff-calendar-ingestion history.
+  nextRelease: NextReleaseInfo | null;
   actual: string | null;     // null when insufficient_data
   forecast: string | null;   // null when insufficient_data or no forecast
   previous: string | null;   // null when insufficient_data
   surprise: string | null;   // null when insufficient_data or no forecast
   score: 1 | 0 | -1 | null; // null when insufficient_data
-  outcome: 'scored' | 'insufficient_data' | 'stale';
+  // 'aging' — renamed from 'stale'. See the matching comment on
+  // ScorecardIndicator above: aging and overdue are independent facts and
+  // must never be merged into one marker.
+  outcome: 'scored' | 'insufficient_data' | 'aging';
   reason: string | null;
-  stale?: boolean;
+  aging?: boolean;
+  // B1 — see ScorecardIndicator.overdue.
+  overdue?: boolean;
 }
 
 export type HeatmapResponse = Record<EconomyKey, HeatmapIndicator[]>;
@@ -229,21 +263,26 @@ export interface FxIndicatorRow {
    * from the response entirely and never carry this flag.
    */
   inapplicable?: boolean;
-  currA: {
-    result: ResultTag;
-    actual: string | null;      // null when N/A
-    forecast?: string | null;
-    surprise?: string | null;
-    outcome: 'scored' | 'insufficient_data';
-  };
-  currB: {
-    result: ResultTag;
-    actual: string | null;      // null when N/A
-    forecast?: string | null;
-    surprise?: string | null;
-    outcome: 'scored' | 'insufficient_data';
-  };
+  currA: FxIndicatorSide;
+  currB: FxIndicatorSide;
   pairScore: number | null; // null = excluded from scoring
+}
+
+/**
+ * Brought in line with the asset scorecard and heatmap (previously this row
+ * had no aging/overdue concept at all — the only pre-existing state was
+ * inapplicable/insufficient_data). See the shared comment on isAging in
+ * oracle-mappers.ts: aging and overdue are independent facts and must never
+ * be merged into one marker.
+ */
+export interface FxIndicatorSide {
+  result: ResultTag;
+  actual: string | null;      // null when N/A
+  forecast?: string | null;
+  surprise?: string | null;
+  outcome: 'scored' | 'insufficient_data' | 'aging';
+  agingDate?: string;
+  overdue?: boolean;
 }
 
 export interface FxCategoryCard {

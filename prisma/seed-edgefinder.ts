@@ -1558,13 +1558,19 @@ const COUNTRY_DERIVED_ASSET_MAPS: CountryDerivedAssetMap[] = [
 
 // Equity-index polarity. Composition is `ruleLayerScore * polarity`.
 //
-// The two labour rows look wrong and are correct — verify the COMPOSED result,
-// not the polarity in isolation. Both indicators are `inverted` at the rule
-// layer, where the handler scores a BELOW-forecast print as BEAT = +1:
-//   US_UNEMP         BEAT (lower unemployment) -> +1 * -1 = -1  bearish equities
-//                    (tight labour market -> wage pressure -> Fed hawkishness)
-//   US_JOBLESS_CLAIMS BEAT (fewer claims)      -> +1 * +1 = +1  bullish equities
-// They genuinely point opposite ways for stocks.
+// Labour rows: strong labour data is BULLISH for equities, uniformly. Both
+// US_UNEMP and US_JOBLESS_CLAIMS are `inverted` at the rule layer, where the
+// handler scores a BELOW-forecast print as BEAT = +1:
+//   US_UNEMP          BEAT (lower unemployment) -> +1 * +1 = +1  bullish equities
+//   US_JOBLESS_CLAIMS BEAT (fewer claims)       -> +1 * +1 = +1  bullish equities
+// US_UNEMP previously carried -1 here, on a wage-pressure -> Fed-hawkishness
+// argument. That second-order reasoning was applied to UNEMP alone and to no
+// other labour row — the same logic would make an NFP beat bearish, yet NFP is
+// +1. All five labour indicators (NFP, ADP, JOLTS, JOBLESS_CLAIMS, UNEMP) now
+// compose bullish on a strong print.
+//
+// USD keeps US_UNEMP at +1 (derived, always was correct) and Gold keeps -1 as
+// part of its uniform inverse of USD — neither is touched by this.
 const INDEX_INDICATOR_POLARITY: Record<string, 1 | -1> = {
   US_GDP_QOQ: 1,
   US_ISM_MFG: 1,
@@ -1576,7 +1582,7 @@ const INDEX_INDICATOR_POLARITY: Record<string, 1 | -1> = {
   US_PCE_YOY: -1,
   US_02Y_SMA: -1,
   US_NFP: 1,
-  US_UNEMP: -1,
+  US_UNEMP: 1,
   US_JOBLESS_CLAIMS: 1,
   US_ADP: 1,
   US_JOLTS: 1,

@@ -33,6 +33,17 @@ vi.mock('@core/db/prisma', () => ({
     assetIndicatorMap: { findMany: vi.fn() },
     asset: { findMany: vi.fn() },
     cotData: { findMany: vi.fn() },
+    // GET /list resolves each indicator's dataPoints (fetched via a nested
+    // Prisma `include`, not a separate dataPoint.findMany call) through
+    // collapseToLatestReleasePerIndicator, which resolves variant ordinals
+    // via this. Empty here is correct — no fixture in this file registers
+    // variants, so ordinalOf falls back to -1 for all rows regardless.
+    indicatorVariant: { findMany: vi.fn().mockResolvedValue([]) },
+    // B1/B4: GET /list now also resolves `overdue` per indicator via
+    // findOverdueByIndicatorCodes, which calls calendarEvent.findMany
+    // directly (see overdue-resolver.ts). Empty by default — no fixture in
+    // this file registers a calendar event, so every row reads overdue:false.
+    calendarEvent: { findMany: vi.fn().mockResolvedValue([]) },
   },
 }));
 
@@ -95,7 +106,13 @@ describe('GET /api/admin/indicators/list', () => {
     mockedIndicator.findMany.mockResolvedValue([
       makeIndicatorRecord({
         dataPoints: [{
+          // collapseToLatestReleasePerIndicator groups by indicatorId — it
+          // must match the parent record's id ('ind-1', the default) or the
+          // row keys into a map slot the route never looks up under.
+          indicatorId: 'ind-1',
+          variant: null,
           observationDate: new Date('2026-05-10'),
+          vintageDate: new Date('2026-05-11T00:00:00.000Z'),
           value: '3.5',
           source: 'manual',
           createdAt: new Date('2026-05-11T00:00:00.000Z'),

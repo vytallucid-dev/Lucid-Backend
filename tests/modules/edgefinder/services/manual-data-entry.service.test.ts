@@ -4,6 +4,11 @@ vi.mock('@core/db/prisma', () => ({
   prisma: {
     indicator: { findUnique: vi.fn() },
     dataPoint: { findFirst: vi.fn() },
+    // ingestManualEntry gates variant-required validation on this list being
+    // non-empty. No fixture in this file submits a variant, so empty here
+    // is correct — isMultiVariant stays false and submittedVariant=null
+    // passes validation, matching pre-variant behaviour.
+    indicatorVariant: { findMany: vi.fn().mockResolvedValue([]) },
   },
 }));
 
@@ -20,9 +25,21 @@ vi.mock('@core/repositories/data-fetch-log.repository', () => ({
   },
 }));
 
+// B2 — every successful write now unconditionally clears any deferral for
+// (indicatorId, variant), regardless of whether the entry was for an
+// overdue event at all. Mocked here the same way dataPointsRepository and
+// dataFetchLogRepository are — a whole-module mock, not a raw prisma stub —
+// matching this file's own convention.
+vi.mock('@core/repositories/calendar-event-deferrals.repository', () => ({
+  calendarEventDeferralsRepository: {
+    clearForEntry: vi.fn().mockResolvedValue(0),
+  },
+}));
+
 import { prisma } from '@core/db/prisma';
 import { dataPointsRepository } from '@core/repositories/data-points.repository';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
+import { calendarEventDeferralsRepository } from '@core/repositories/calendar-event-deferrals.repository';
 import {
   ingestManualEntry,
   isRevisionMismatch,
@@ -34,6 +51,7 @@ const mockedFindFirst = prisma.dataPoint.findFirst as unknown as ReturnType<type
 const mockedUpsert = dataPointsRepository.upsert as unknown as ReturnType<typeof vi.fn>;
 const mockedLogStart = dataFetchLogRepository.start as unknown as ReturnType<typeof vi.fn>;
 const mockedLogComplete = dataFetchLogRepository.complete as unknown as ReturnType<typeof vi.fn>;
+const mockedClearForEntry = calendarEventDeferralsRepository.clearForEntry as unknown as ReturnType<typeof vi.fn>;
 
 const OBS_DATE = new Date('2026-04-01T00:00:00.000Z');
 
@@ -56,6 +74,7 @@ describe('ingestManualEntry', () => {
     mockedLogStart.mockResolvedValue({ id: 'log-1' });
     mockedLogComplete.mockResolvedValue(undefined);
     mockedFindFirst.mockResolvedValue(null);
+    mockedClearForEntry.mockResolvedValue(0);
   });
 
   it('inserts a forex_factory indicator with all three values', async () => {

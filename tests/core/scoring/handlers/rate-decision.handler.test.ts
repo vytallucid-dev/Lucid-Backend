@@ -2,7 +2,11 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 
 vi.mock('@core/db/prisma', () => ({
   prisma: {
-    dataPoint: { findFirst: vi.fn() },
+    dataPoint: { findFirst: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
+    // findLatestRelease also resolves variant ordinals via getOrdinalMap.
+    // Empty here is correct for every fixture in this file — none registers
+    // variants, so ordinalOf falls back to -1 for all rows regardless.
+    indicatorVariant: { findMany: vi.fn().mockResolvedValue([]) },
   },
 }));
 
@@ -11,6 +15,7 @@ import { rateDecisionHandler } from '@core/scoring/handlers/rate-decision.handle
 import { ScoringContext } from '@core/scoring/types';
 
 const mockedFindFirst = prisma.dataPoint.findFirst as unknown as ReturnType<typeof vi.fn>;
+const mockedFindMany = prisma.dataPoint.findMany as unknown as ReturnType<typeof vi.fn>;
 
 function ctx(): ScoringContext {
   return {
@@ -26,12 +31,21 @@ function ctx(): ScoringContext {
 // the absolute action. `value` = actual bps change, `forecastValue` =
 // expected bps change — both in the same unit (see rate-decision.helpers.ts).
 function mockDp(value: number, forecastValue: number | null): void {
-  mockedFindFirst.mockResolvedValueOnce({
+  const dp = {
     id: 'dp-1',
     value,
     forecastValue,
     observationDate: new Date('2026-05-01'),
-  });
+    variant: null,
+    vintageDate: new Date('2026-05-01'),
+  };
+  // findLatestRelease resolves via findFirst (date probe, select-only) then
+  // findMany (full candidate rows for that date, fed through
+  // pickLatestRelease). The handler's returned dp comes from findMany's
+  // result, not findFirst's — both must reflect the same row or the test
+  // would pass while never exercising the real tiebreak path.
+  mockedFindFirst.mockResolvedValueOnce({ observationDate: dp.observationDate });
+  mockedFindMany.mockResolvedValueOnce([dp]);
 }
 
 describe('rateDecisionHandler', () => {

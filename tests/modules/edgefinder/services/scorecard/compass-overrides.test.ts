@@ -215,6 +215,31 @@ describe('[case 13] Override 1 — index bad-news-good-news (UNGATED, derived by
     expect(r.overridesFired).toHaveLength(0);
   });
 
+  // US_UNEMP is a full member of Override 1's read. Index polarity is +1, so a
+  // composed -1 here means unemployment printed HIGHER than forecast — weak
+  // labour data, exactly what this override doubles. It was previously skipped
+  // at the read site while index polarity was -1.
+  it('SPY + UNEMP -1 → +2, Override 1 fires ON US_UNEMP', () => {
+    const r = computeCompassOverridesForAsset('SPY', 'index', gate(), [ind('US_UNEMP', -1, 'Jobs')]);
+    expect(r.totalAdjustment).toBe(2);
+    expect(r.overridesFired[0].code).toBe('OVERRIDE_1_BAD_NEWS_GOOD_NEWS');
+    expect(r.overridesFired[0].indicatorsAffected).toEqual(['US_UNEMP']);
+  });
+
+  it('all five labour codes at -1 → +10, every one affected', () => {
+    const r = computeCompassOverridesForAsset('SPY', 'index', gate(), [
+      ind('US_NFP', -1, 'Jobs'),
+      ind('US_UNEMP', -1, 'Jobs'),
+      ind('US_JOBLESS_CLAIMS', -1, 'Jobs'),
+      ind('US_ADP', -1, 'Jobs'),
+      ind('US_JOLTS', -1, 'Jobs'),
+    ]);
+    expect(r.totalAdjustment).toBe(10);
+    expect(r.overridesFired[0].indicatorsAffected).toEqual([
+      'US_NFP', 'US_UNEMP', 'US_JOBLESS_CLAIMS', 'US_ADP', 'US_JOLTS',
+    ]);
+  });
+
   // Any future index (not SPY/NAS100/US30) must also fire automatically.
   it('a hypothetical future index fires Override 1 with no code change', () => {
     const r = computeCompassOverridesForAsset('RUSSELL2000', 'index', gate(), [ind('US_ADP', -1, 'Jobs')]);

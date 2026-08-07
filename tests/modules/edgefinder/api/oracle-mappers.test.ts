@@ -12,13 +12,12 @@ import {
   clampCotValue,
   scoreToIndicatorValue,
   pairScoreToIndicatorValue,
-  isStale,
+  isAging,
   formatDateShort,
   formatPercentWithSign,
   formatNumberWithSign,
   formatIndicatorValue,
   computeSurprise,
-  computeNextRelease,
   INDICATOR_SLOT,
   PAIR_ROW_TO_SLOT,
   EMPTY_INDICATOR_SLOTS,
@@ -134,20 +133,23 @@ describe('pairScoreToIndicatorValue', () => {
 });
 
 // ============================================================================
-// isStale
+// isAging (renamed from isStale — see the function's own header comment for
+// why: this codebase now has three distinct staleness-adjacent mechanisms,
+// and "stale" meaning more than one of them is exactly the kind of ambiguity
+// that previously produced five independent win-rate implementations)
 // ============================================================================
 
-describe('isStale', () => {
+describe('isAging', () => {
   it('returns false when observation is within 60 days', () => {
     const asOf = new Date('2026-05-19');
     const obs = new Date('2026-04-20');
-    expect(isStale(obs, asOf)).toBe(false);
+    expect(isAging(obs, asOf)).toBe(false);
   });
 
   it('returns true when observation is older than 60 days', () => {
     const asOf = new Date('2026-05-19');
     const obs = new Date('2026-01-01');
-    expect(isStale(obs, asOf)).toBe(true);
+    expect(isAging(obs, asOf)).toBe(true);
   });
 });
 
@@ -258,31 +260,11 @@ describe('computeSurprise', () => {
   });
 });
 
-// ============================================================================
-// computeNextRelease
-// ============================================================================
-
-describe('computeNextRelease', () => {
-  it('returns Daily for daily frequency', () => {
-    expect(computeNextRelease(new Date(), 'daily')).toBe('Daily');
-  });
-
-  it('returns — for unknown/event_driven frequency', () => {
-    expect(computeNextRelease(new Date(), 'event_driven')).toBe('—');
-  });
-
-  it('adds ~30 days for monthly', () => {
-    const base = new Date('2026-04-01T00:00:00.000Z');
-    const result = computeNextRelease(base, 'monthly');
-    expect(result).toBe('May 1, 2026');
-  });
-
-  it('adds ~7 days for weekly', () => {
-    const base = new Date('2026-05-01T00:00:00.000Z');
-    const result = computeNextRelease(base, 'weekly');
-    expect(result).toBe('May 8, 2026');
-  });
-});
+// computeNextRelease (frequency+day-count arithmetic) removed — nextRelease
+// now derives from stored calendar_events. See
+// tests/modules/edgefinder/api/oracle.routes.test.ts for coverage of the
+// calendar-backed replacement, and calendar-events.repository.test.ts for
+// findNextByIndicatorCodes.
 
 // ============================================================================
 // INDICATOR_SLOT / PAIR_ROW_TO_SLOT coverage

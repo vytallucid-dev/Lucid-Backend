@@ -15,6 +15,8 @@ import { niftyPublicRouter } from '@modules/nifty/routes/nifty-public.routes';
 import { niftyPublicV2Router } from '@modules/nifty/api/nifty.routes';
 import { edgefinderRouter } from '@modules/edgefinder/routes';
 import { oracleRouter } from '@modules/edgefinder/api/oracle.routes';
+import { calendarRouter } from '@modules/edgefinder/routes/calendar.routes';
+import { overdueRouter } from '@modules/edgefinder/routes/overdue.routes';
 import { tradingRouter } from '@modules/trading/routes';
 
 export function createApp(): Express {
@@ -47,6 +49,17 @@ export function createApp(): Express {
   app.use('/api/nifty', requireAuth, niftyPublicRouter);
   app.use('/api/nifty', requireAuth, niftyPublicV2Router);
   app.use('/api/oracle', requireAuth, oracleRouter);
+  // B3 — the overdue badge/panel, visible to every signed-in user (not
+  // admin-gated: seeing what's overdue is a read anyone benefits from, only
+  // deferring is a curation action — see admin.routes.ts for that half).
+  // Mounted at its own sub-path (not bare /api/oracle, which oracleRouter
+  // already occupies) so overdueRouter's '/' handler resolves to
+  // GET /api/oracle/overdue, not a second handler racing oracleRouter's own
+  // root route.
+  app.use('/api/oracle/overdue', requireAuth, overdueRouter);
+  // Economic calendar — a top-level surface, peer to Oracle rather than one of
+  // its sub-tabs, matching where the page sits in the dock.
+  app.use('/api/calendar', requireAuth, calendarRouter);
   app.use('/api/edgefinder', edgefinderRouter);
   app.use('/api/trading', requireAuth, tradingRouter);
   app.use('/api/admin', adminRouter);

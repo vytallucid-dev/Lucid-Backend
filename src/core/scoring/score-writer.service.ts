@@ -2,6 +2,7 @@ import { prisma } from '@core/db/prisma';
 import { logger } from '@core/utils/logger';
 import { ScoringResult } from './types';
 import { scoreIndicator } from './engine';
+import { findLatestRelease } from './helpers/latest-release';
 import { Prisma } from '@prisma/client';
 
 export interface ComputeAndStoreParams {
@@ -69,14 +70,7 @@ export async function computeAndStoreScore(
 
   const dataPointId = (metadata as { dataPointId?: string }).dataPointId;
   if (!dataPointId) {
-    const fallback = await prisma.dataPoint.findFirst({
-      where: {
-        indicatorId: indicator.id,
-        isCurrent: true,
-        observationDate: { lte: params.observationDate },
-      },
-      orderBy: { observationDate: 'desc' },
-    });
+    const fallback = await findLatestRelease(indicator.id, params.observationDate);
     if (!fallback) {
       logger.warn(
         { indicatorCode: params.indicatorCode },

@@ -1,5 +1,5 @@
-import { prisma } from '@core/db/prisma';
 import { ScoringContext, ScoringResult, Score } from '../types';
+import { findLatestRelease } from '../helpers/latest-release';
 
 export async function normalHandler(ctx: ScoringContext): Promise<ScoringResult> {
   const rule = ctx.ruleDefinition as {
@@ -7,14 +7,7 @@ export async function normalHandler(ctx: ScoringContext): Promise<ScoringResult>
   };
   const tolerance = rule.forecast_tolerance_pct;
 
-  const dp = await prisma.dataPoint.findFirst({
-    where: {
-      indicatorId: ctx.indicatorId,
-      isCurrent: true,
-      observationDate: { lte: ctx.observationDate },
-    },
-    orderBy: { observationDate: 'desc' },
-  });
+  const dp = await findLatestRelease(ctx.indicatorId, ctx.observationDate);
 
   if (!dp) {
     return {

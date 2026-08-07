@@ -3,6 +3,8 @@ import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { prisma } from '@core/db/prisma';
 import { AppError } from '@core/middleware/error-handler';
+import { collapseToLatestReleasePerIndicator } from '@core/repositories/latest-release-by-indicator';
+import { findOverdueByIndicatorCodes } from '@modules/edgefinder/services/overdue-resolver';
 
 export const adminIndicatorsRouter = Router();
 
@@ -42,19 +44,33 @@ adminIndicatorsRouter.get('/list', async (req: Request, res: Response, next: Nex
           ? [{ displayOrder: 'asc' }, { code: 'asc' }]
           : [{ country: 'asc' }, { uiGroup: 'asc' }, { code: 'asc' }],
       include: {
+        // Not take:1 — an indicator can now have more than one isCurrent row
+        // on its latest observationDate (Flash + Final coexisting). Fetch
+        // every current row (bounded: at most one per registered variant,
+        // so single digits per indicator) and resolve the most-recent
+        // release below via collapseToLatestReleasePerIndicator, same
+        // tiebreak as scoring (observationDate desc, variant ordinal desc,
+        // vintageDate desc).
         dataPoints: {
           where: { isCurrent: true },
           orderBy: { observationDate: 'desc' },
-          take: 1,
           select: {
+            indicatorId: true,
+            variant: true,
             observationDate: true,
+            vintageDate: true,
             value: true,
+            forecastValue: true,
+            previousValue: true,
             source: true,
             createdAt: true,
           },
         },
       },
     });
+
+    const allCurrentDataPoints = indicators.flatMap((ind) => ind.dataPoints);
+    const latestDpByIndicatorId = await collapseToLatestReleasePerIndicator(allCurrentDataPoints);
 
     // ── Phase 6: primary asset, derived from asset_indicator_map rather than the
     // raw `country` field — the same class of fix Phase 2 made for the scoring
@@ -122,14 +138,26 @@ adminIndicatorsRouter.get('/list', async (req: Request, res: Response, next: Nex
       }
     }
 
+    // B4 — overdue on the admin data page. One batched lookup for every
+    // indicator returned, regardless of tool. NIFTY indicators are never
+    // wired into calendar_events (no Forex Factory ingestion path reaches
+    // them), so findOverdueByIndicatorCodes structurally returns nothing for
+    // any IND_NIFTY_* code — they read overdue:false with no branch written
+    // for NIFTY anywhere in this file.
+    const overdueByCode = await findOverdueByIndicatorCodes(
+      indicators.map((i) => i.code),
+      new Date(),
+    );
+
     const data = indicators.map((ind) => {
-      const latestDp = ind.dataPoints[0] ?? null;
+      const latestDp = latestDpByIndicatorId.get(ind.id) ?? null;
       const cotRow = cotLatestByCode.get(ind.code) ?? null;
       return {
         id: ind.id,
         code: ind.code,
         name: ind.name,
         country: ind.country,
+        overdue: (overdueByCode.get(ind.code)?.length ?? 0) > 0,
         // Phase 6: the asset (currency) this indicator belongs to, via
         // asset_indicator_map — null for indicators with no currency owner
         // (e.g. NIFTY indicators, where this map is never populated).
@@ -178,6 +206,16 @@ const latestQuerySchema = z.object({
     .transform((s) => Math.min(parseInt(s, 10), 100))
     .optional()
     .default('10'),
+  // B5: history defaults to Finals-only for a straight Flash/Final pair; the
+  // toggle (allVariants=true) reveals every stored release, including
+  // superseded Flash rows. Ignored for single-release indicators (no effect
+  // either way) and for ladder-shaped indicators (3+ registered variants),
+  // which always return every variant — see isFinalsOnlyByDefault below.
+  allVariants: z
+    .string()
+    .transform((s) => s === 'true' || s === '1')
+    .optional()
+    .default('false'),
 });
 
 adminIndicatorsRouter.get(
@@ -190,6 +228,7 @@ adminIndicatorsRouter.get(
         throw new AppError(400, 'Invalid query params', 'VALIDATION_ERROR', parsed.error.flatten());
       }
       const limit = typeof parsed.data.limit === 'number' ? parsed.data.limit : parseInt(parsed.data.limit as string, 10);
+      const allVariants = parsed.data.allVariants;
 
       const indicator = await prisma.indicator.findUnique({
         where: { code: code as string },
@@ -199,13 +238,36 @@ adminIndicatorsRouter.get(
         throw new AppError(404, `Indicator not found: ${code}`, 'INDICATOR_NOT_FOUND');
       }
 
+      const registeredVariants = await prisma.indicatorVariant.findMany({
+        where: { indicatorId: indicator.id },
+        select: { variant: true, ordinal: true, isFinal: true },
+        orderBy: { ordinal: 'asc' },
+      });
+
+      // B5's default is derived from the registry's SHAPE, not a hardcoded
+      // indicator list: a straight two-rung Flash/Final pair defaults to
+      // Finals-only (the common PMI shape); a three-rung-or-more ladder
+      // (Advance/Second/Third, Flash/Prelim/Final) defaults to showing every
+      // rung, since B5 says each one moves meaningfully. Single-release
+      // indicators (zero registered variants) are unaffected either way —
+      // the variant filter below is a no-op when there is nothing to filter.
+      const isFinalsOnlyByDefault = registeredVariants.length === 2;
+      const finalVariant = registeredVariants.find((v) => v.isFinal)?.variant ?? null;
+      const applyFinalsOnlyFilter = isFinalsOnlyByDefault && !allVariants && finalVariant !== null;
+
       const dataPoints = await prisma.dataPoint.findMany({
-        where: { indicatorId: indicator.id, isCurrent: true },
+        where: {
+          indicatorId: indicator.id,
+          isCurrent: true,
+          ...(applyFinalsOnlyFilter ? { variant: finalVariant } : {}),
+        },
         orderBy: { observationDate: 'desc' },
         take: limit,
         select: {
           id: true,
           observationDate: true,
+          variant: true,
+          isLegacyVariant: true,
           value: true,
           forecastValue: true,
           previousValue: true,
@@ -221,6 +283,8 @@ adminIndicatorsRouter.get(
       const data = dataPoints.map((dp) => ({
         id: dp.id,
         observationDate: dp.observationDate.toISOString().slice(0, 10),
+        variant: dp.variant,
+        isLegacyVariant: dp.isLegacyVariant,
         value: Number(dp.value),
         forecastValue: dp.forecastValue !== null ? Number(dp.forecastValue) : null,
         previousValue: dp.previousValue !== null ? Number(dp.previousValue) : null,
@@ -245,6 +309,13 @@ adminIndicatorsRouter.get(
           uiGroup: indicator.uiGroup,
           description: indicator.description,
         },
+        // Derived variant metadata for the frontend: the selector (shown
+        // only when non-empty) and whether the finals-only toggle is
+        // meaningful here at all (a single-release or 3+-rung-ladder
+        // indicator has nothing to toggle).
+        variants: registeredVariants.map((v) => ({ variant: v.variant, ordinal: v.ordinal, isFinal: v.isFinal })),
+        finalsOnlyDefault: isFinalsOnlyByDefault,
+        allVariants,
         count: data.length,
         data,
       });

@@ -127,10 +127,42 @@ export async function computePair12WeekHistory(
 }
 
 // ============================================================================
-// Staleness check
+// Aging check
 // ============================================================================
-
-export function isStale(observationDate: Date, asOfDate: Date): boolean {
+//
+// Renamed from isStale. This codebase now has THREE distinct staleness-
+// adjacent mechanisms, and calling any of them "stale" is exactly the kind
+// of ambiguity that previously produced five independent win-rate
+// implementations — a name collision, not a logic collision, is what let
+// that happen unnoticed.
+//
+//   AGING (here)       — flat 60-day tolerance on observationDate. Value-
+//                         driven, indicator-level, frequency-blind. Answers
+//                         "is the number on file old in absolute terms."
+//   OVERDUE (B1, see
+//   overdue-resolver.ts) — a specific scheduled calendar_events row passed
+//                         >24h ago with no matching DataPoint. Event-driven,
+//                         per-variant. Answers "was a specific release missed."
+//   DataHealth severity — frequency-scaled bands (data-health.ts), shared
+//                         with NIFTY's data-gaps report. Answers "is the
+//                         number old relative to THIS indicator's own cadence."
+//
+// All three stay running. None is a fallback for another — each answers a
+// genuinely different question, and NIFTY relies on aging + DataHealth today
+// (it has zero calendar events, so overdue never applies to it).
+//
+// KNOWN OPEN ITEM, explicitly not resolved here: aging's flat 60 days is a
+// cruder version of what DataHealth already does correctly with per-
+// frequency bands (daily 5/14, weekly 10/21, monthly 45/75, quarterly
+// 100/130, event_driven 365/730). A quarterly indicator releasing exactly on
+// schedule trips aging's flat 60-day check while DataHealth correctly gives
+// it 100/130 days — the two can and will disagree on the same indicator.
+// Replacing aging with DataHealth's bands is a plausible future
+// consolidation, but it is its own prompt with its own regression check
+// against every current aging consumer. Do not merge them under time
+// pressure; this comment is the flag for that future work, not a directive
+// to do it now.
+export function isAging(observationDate: Date, asOfDate: Date): boolean {
   const diffMs = asOfDate.getTime() - observationDate.getTime();
   return diffMs > 60 * 24 * 60 * 60 * 1000;
 }
@@ -223,22 +255,12 @@ export function computeSurprise(
   return formatNumberWithSign(diff);
 }
 
-/**
- * Compute approximate next release from last release date and frequency.
- * Returns formatted string for frontend display.
- */
-export function computeNextRelease(lastRelease: Date, dbFrequency: string): string {
-  if (dbFrequency === 'daily') return 'Daily';
-  const daysToAdd =
-    dbFrequency === 'quarterly' ? 90 :
-    dbFrequency === 'monthly' ? 30 :
-    dbFrequency === 'weekly' ? 7 :
-    0;
-  if (daysToAdd === 0) return '—';
-  const next = new Date(lastRelease);
-  next.setUTCDate(next.getUTCDate() + daysToAdd);
-  return formatDateShort(next);
-}
+// computeNextRelease (frequency+30/90/7-day arithmetic) removed. nextRelease
+// now derives from stored calendar_events — the actual scheduled occurrence,
+// not a guess from cadence. See getNextRelease in calendar.service.ts and its
+// call site in oracle.routes.ts's heatmap handler. A guessed date and a real
+// one are not the same fact, and keeping both around is how a arithmetic
+// nobody trusts survives next to the truth it was standing in for. (See B1.)
 
 // ============================================================================
 // Indicator code → column/section mappings
