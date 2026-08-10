@@ -1,0 +1,29 @@
+-- Companion-event designation for calendar_events.
+--
+-- PURELY ADDITIVE. One new column, NOT NULL with a default, on one existing
+-- table. No existing column is altered or dropped, no existing row is
+-- rewritten beyond the implicit backfill the DEFAULT applies, and no scoring
+-- path is touched — this column feeds only the overdue resolver and the
+-- calendar/history render.
+--
+-- WHY THIS EXISTS
+-- ----------------
+-- A handful of indicator codes (AU_RBA_RATE, UK_GDP_MOM, JP_BOJ_RATE) are
+-- mapped from TWO Forex Factory titles because one real-world release sends
+-- two calendar rows at the same instant (e.g. AUD "Cash Rate" and "RBA Rate
+-- Statement" both publish at the same RBA decision). Previously both rows
+-- were indistinguishable — the overdue resolver walked calendar_events per
+-- ROW, so one release could independently go overdue twice and the badge
+-- would demand two entries for one number.
+--
+-- is_primary marks which of the two titles drives overdue/due-today/the
+-- badge (see forex-factory-event-mapping.ts's COMPANION EVENTS doc for the
+-- full designation rationale, and overdue-resolver.ts for the read side).
+--
+-- DEFAULT TRUE — every existing row and every unmapped row (indicatorId IS
+-- NULL) becomes primary on this migration, which is correct: companion is an
+-- opt-in designation on a handful of known titles, never the default state.
+-- A future ingest run backfills the correct value for the (currently two)
+-- historical rows that map to a companion title.
+
+ALTER TABLE "calendar_events" ADD COLUMN "is_primary" BOOLEAN NOT NULL DEFAULT true;

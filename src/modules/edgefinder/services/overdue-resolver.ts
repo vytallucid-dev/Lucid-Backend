@@ -24,6 +24,7 @@ import { calendarEventDeferralsRepository } from '@core/repositories/calendar-ev
  *
  * Definition: a calendar_events row is overdue when
  *   scheduledAt < now - 24h
+ *   AND isPrimary = true
  *   AND no DataPoint exists for (indicatorId, variant, observationDate)
  *       where observationDate is EITHER scheduledAt truncated to a UTC
  *       calendar date OR scheduledAt truncated to an IST calendar date —
@@ -33,6 +34,18 @@ import { calendarEventDeferralsRepository } from '@core/repositories/calendar-ev
  * flags. Checking "does this indicator have ANY recent data" would see the
  * Flash row and go quiet — exactly the miss variants exist to catch. This is
  * why the resolver walks calendar_events (occurrences), not indicators.
+ *
+ * COMPANION EVENTS ARE EXCLUDED AT THE QUERY, NOT PER-EVENT. This looks like
+ * it contradicts the paragraph above, but it doesn't: a companion row (e.g.
+ * AU_RBA_RATE's "RBA Rate Statement", UK_GDP_MOM's "Prelim GDP q/q" — see
+ * the COMPANION EVENTS doc in forex-factory-event-mapping.ts) is not a
+ * DIFFERENT release the way Flash and Final are; it's the SAME release as
+ * its primary, reported by Forex Factory as a second calendar row at the
+ * same instant. Flagging both independently would demand two entries for
+ * one number, which is precisely the bug this exclusion fixes. Only the
+ * primary title's row ever becomes a CandidateEvent; the companion row is
+ * never evaluated against DataPoint at all, and can never appear in
+ * findAllOverdue, findDueToday, or the badge count.
  *
  * INDICATORS WITH NO CALENDAR EVENT ARE NEVER OVERDUE. There is nothing to
  * be overdue against. This covers every NIFTY indicator (zero calendar
@@ -172,6 +185,13 @@ export type OverdueEvent = CandidateEvent;
  * Every overdue occurrence across the whole registry, as of `now`
  * (scheduledAt < now - 24h, no matching DataPoint on either the UTC or IST
  * truncated date).
+ *
+ * isPrimary: true — companion events (see the COMPANION EVENTS doc in
+ * forex-factory-event-mapping.ts, e.g. AU_RBA_RATE's "RBA Rate Statement"
+ * row) are excluded from the candidate set entirely. A companion can never
+ * go overdue and never counts toward the badge; only the primary row for an
+ * indicator drives that. This is a query-level exclusion, not a post-filter
+ * — a companion row never even reaches filterUnentered's DataPoint join.
  */
 export async function findAllOverdue(now: Date = new Date()): Promise<OverdueEvent[]> {
   const cutoff = new Date(now.getTime() - OVERDUE_GRACE_MS);
@@ -179,6 +199,7 @@ export async function findAllOverdue(now: Date = new Date()): Promise<OverdueEve
   const candidates = await prisma.calendarEvent.findMany({
     where: {
       indicatorId: { not: null },
+      isPrimary: true,
       scheduledAt: { lt: cutoff },
     },
     orderBy: { scheduledAt: 'asc' },
@@ -201,6 +222,10 @@ export async function findAllOverdue(now: Date = new Date()): Promise<OverdueEve
  * staleness signal — an event scheduled 3 hours ago with no data yet is
  * completely normal (releases don't get entered the instant they print), so
  * it must never count toward the badge (see buildOverduePanel.badgeCount).
+ *
+ * isPrimary: true — same companion exclusion as findAllOverdue above. A
+ * companion event is never "coming due" in its own right; it rides along
+ * with its primary.
  */
 export async function findDueToday(now: Date = new Date()): Promise<OverdueEvent[]> {
   const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -210,6 +235,7 @@ export async function findDueToday(now: Date = new Date()): Promise<OverdueEvent
   const candidates = await prisma.calendarEvent.findMany({
     where: {
       indicatorId: { not: null },
+      isPrimary: true,
       scheduledAt: { gte: dayStart, lt: dayEnd, gt: overdueCutoff },
     },
     orderBy: { scheduledAt: 'asc' },

@@ -38,6 +38,7 @@ function makeEvent(overrides: Partial<Record<string, unknown>> = {}) {
     indicatorId: 'ind-1',
     indicatorCode: 'US_TEST',
     variant: null,
+    isPrimary: true,
     firstSeenAt: new Date(),
     lastSeenAt: new Date(),
     fetchedVia: null,
@@ -181,6 +182,63 @@ describe('findDueToday — Fix 1: shares the same join as findAllOverdue', () =>
     const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
     const overdueCutoff = new Date(NOW.getTime() - 24 * 60 * 60 * 1000);
     expect(call.where.scheduledAt).toEqual({ gte: dayStart, lt: dayEnd, gt: overdueCutoff });
+  });
+});
+
+describe('Companion events — isPrimary exclusion from overdue/due-today', () => {
+  const NOW = new Date('2026-08-12T12:00:00.000Z'); // >24h past 2026-08-11T04:30Z (AU_RBA_RATE's instant)
+
+  it('findAllOverdue queries with isPrimary: true — companions never reach the candidate set', async () => {
+    mockedCalendarFindMany.mockResolvedValue([]);
+    mockedDataPointFindMany.mockResolvedValue([]);
+
+    await findAllOverdue(NOW);
+
+    expect(mockedCalendarFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ isPrimary: true }),
+      }),
+    );
+  });
+
+  it('findDueToday queries with isPrimary: true — companions never reach the candidate set', async () => {
+    mockedCalendarFindMany.mockResolvedValue([]);
+    mockedDataPointFindMany.mockResolvedValue([]);
+
+    await findDueToday(NOW);
+
+    expect(mockedCalendarFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ isPrimary: true }),
+      }),
+    );
+  });
+
+  // AU_RBA_RATE end-to-end: the DB-level isPrimary:true filter means a real
+  // Prisma call would never RETURN the companion row in the first place —
+  // this proves that IF only the primary row is returned (as the real query
+  // guarantees), exactly one overdue entry results for the pair, never two.
+  it('AU_RBA_RATE: only the primary "Cash Rate" row reaching the candidate set produces exactly one overdue entry', async () => {
+    // The companion "RBA Rate Statement" row is deliberately NOT included
+    // here — that's the point of the isPrimary:true WHERE clause verified
+    // above; a companion row is filtered before it ever reaches this mock in
+    // production. This asserts the DOWNSTREAM consequence: one candidate row
+    // in, one overdue entry out, never doubled.
+    mockedCalendarFindMany.mockResolvedValue([
+      makeEvent({
+        id: 'evt-cash-rate',
+        country: 'AUD',
+        title: 'Cash Rate',
+        indicatorCode: 'AU_RBA_RATE',
+        scheduledAt: new Date('2026-08-11T04:30:00.000Z'),
+        isPrimary: true,
+      }),
+    ]);
+    mockedDataPointFindMany.mockResolvedValue([]);
+
+    const result = await findAllOverdue(NOW);
+    expect(result).toHaveLength(1);
+    expect(result[0].event.title).toBe('Cash Rate');
   });
 });
 

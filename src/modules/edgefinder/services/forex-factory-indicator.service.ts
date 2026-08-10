@@ -172,6 +172,124 @@ export function parseForexFactoryDate(dateStr: string): Date {
   );
 }
 
+/**
+ * Near-duplicate collapse window — same value as the repository's
+ * NEAR_DUPLICATE_WINDOW_MS (calendar-events.repository.ts), which handles
+ * the cross-fetch half of this same problem. Two constants rather than one
+ * shared import because they answer the question at two different layers
+ * (an in-memory array here, a stored-row lookup there) and a shared name
+ * would suggest a coupling that doesn't otherwise exist between this service
+ * and that repository — this file already depends on the repository through
+ * its public upsert() contract, nothing more.
+ */
+const NEAR_DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
+
+function hasPopulatedFields(event: ForexFactoryEvent): boolean {
+  return (event.forecast ?? '') !== '' || (event.previous ?? '') !== '';
+}
+
+/**
+ * Collapse Forex Factory feed rows that are the SAME real-world release
+ * reported twice within one fetch, before any of them reach upsert().
+ *
+ * THE PROBLEM THIS FIXES — US_ADP, observed live: two rows, identical title
+ * ("ADP Weekly Employment Change"), identical country, scheduledAt 60
+ * seconds apart, one with previousRaw: null (a placeholder) and one with
+ * previousRaw: "15.0K" (the real row). The calendar_events natural key
+ * (source, country, title, scheduledAt) treated them as two distinct
+ * occurrences, correctly per its own definition — the assumption that ANY
+ * distinct scheduledAt is a distinct occurrence is what breaks down here,
+ * not the key itself.
+ *
+ * WHY GROUP BY (country, title) AND A TIME WINDOW, NOT JUST FIRST-WINS —
+ * this must never merge two GENUINE same-day releases of the same title
+ * (rare, but the mapping table's exact-string design already assumes title
+ * collisions happen across countries every week — see the file header of
+ * forex-factory-event-mapping.ts). A 5-minute window is wide enough to
+ * absorb feed jitter and narrow enough that no real release schedule places
+ * two distinct prints of the same series 5 minutes apart.
+ *
+ * WHY THIS NEVER TOUCHES COMPANION PAIRS (AU_RBA_RATE's "Cash Rate" /
+ * "RBA Rate Statement", UK_GDP_MOM's "GDP m/m" / "Prelim GDP q/q") — the
+ * group key is (country, title), an exact string match. Two different
+ * titles that happen to map to the same indicator code never enter the same
+ * group here; collapsing on title, not on resolved indicator code, is what
+ * keeps this fix and the companion-event fix from interfering with each
+ * other. Verified explicitly in the test suite, not merely assumed.
+ *
+ * WHY THIS NEVER TOUCHES A GENUINE RESCHEDULE — the same title moved by
+ * hours or days is, by definition, outside the 5-minute window, so it never
+ * groups with the original row and survives as two separate events, exactly
+ * as intended (see the CalendarEvent model's own comment on this).
+ *
+ * MERGE RULE, mirrors the repository's cross-fetch merge exactly: within a
+ * collapsed group, the row carrying forecast and/or previous is the real
+ * one and survives; a row with neither is the placeholder and is dropped. If
+ * every row in a group is a placeholder, or more than one carries populated
+ * fields (never observed, but not impossible), the LATEST scheduledAt in the
+ * group survives — the most recent information is the best guess when the
+ * populated-fields signal doesn't disambiguate.
+ */
+export function collapseNearDuplicates(events: ForexFactoryEvent[]): ForexFactoryEvent[] {
+  const groups = new Map<string, ForexFactoryEvent[]>();
+  for (const event of events) {
+    const key = `${event.country} ${event.title}`;
+    const list = groups.get(key);
+    if (list) list.push(event);
+    else groups.set(key, [event]);
+  }
+
+  const survivors: ForexFactoryEvent[] = [];
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      survivors.push(group[0]);
+      continue;
+    }
+
+    // Sort by instant so the window comparison and the "latest" tiebreaker
+    // both walk the group in chronological order.
+    const sorted = [...group].sort(
+      (a, b) => parseForexFactoryInstant(a.date).getTime() - parseForexFactoryInstant(b.date).getTime(),
+    );
+
+    // Cluster adjacent rows within NEAR_DUPLICATE_WINDOW_MS of the cluster's
+    // FIRST member (not the previous row) — chaining "within window of the
+    // previous row" could let a slow drift of many small gaps merge rows
+    // that are far apart overall. A group of two or three placeholder/real
+    // rows for one release, the only case observed in practice, is
+    // unaffected by this distinction; it only matters for pathological
+    // inputs the feed has never actually sent.
+    let clusterStart = sorted[0];
+    let cluster: ForexFactoryEvent[] = [clusterStart];
+    for (let i = 1; i < sorted.length; i++) {
+      const instant = parseForexFactoryInstant(sorted[i].date).getTime();
+      const withinWindow = instant - parseForexFactoryInstant(clusterStart.date).getTime() <= NEAR_DUPLICATE_WINDOW_MS;
+      if (withinWindow) {
+        cluster.push(sorted[i]);
+        continue;
+      }
+      survivors.push(pickSurvivor(cluster));
+      clusterStart = sorted[i];
+      cluster = [clusterStart];
+    }
+    survivors.push(pickSurvivor(cluster));
+  }
+
+  return survivors;
+}
+
+/** One cluster's winner — see collapseNearDuplicates' MERGE RULE doc. */
+function pickSurvivor(cluster: ForexFactoryEvent[]): ForexFactoryEvent {
+  if (cluster.length === 1) return cluster[0];
+
+  const populated = cluster.filter(hasPopulatedFields);
+  if (populated.length === 1) return populated[0];
+
+  // Zero or multiple populated rows: fall back to latest instant. cluster is
+  // already chronologically sorted by the caller.
+  return cluster[cluster.length - 1];
+}
+
 interface IngestOneOutcome {
   action: 'inserted' | 'revised' | 'skipped';
 }
@@ -313,10 +431,22 @@ export async function fetchForexFactoryWeek(
 
   try {
     const fetchResult = await forexFactoryClient.getCalendarWeek();
+    // totalEvents reports what the feed actually sent, uncollapsed — this is
+    // telemetry about the upstream fetch, not about how many occurrences get
+    // written. The collapse below only changes what happens downstream.
     totalEvents = fetchResult.events.length;
 
+    const events = collapseNearDuplicates(fetchResult.events);
+    const collapsedCount = fetchResult.events.length - events.length;
+    if (collapsedCount > 0) {
+      logger.info(
+        { jobName: JOB_NAME, collapsedCount, totalEvents },
+        'ForexFactory: collapsed near-duplicate feed rows before ingest',
+      );
+    }
+
     const codes = new Set<string>();
-    for (const event of fetchResult.events) {
+    for (const event of events) {
       const resolution = resolveEvent(event.country, event.title);
       if (resolution) codes.add(resolution.code);
     }
@@ -328,7 +458,7 @@ export async function fetchForexFactoryWeek(
       : [];
     const codeToId = new Map(indicators.map((i) => [i.code, i.id]));
 
-    for (const event of fetchResult.events) {
+    for (const event of events) {
       const resolution = resolveEvent(event.country, event.title);
       const indicatorCode = resolution?.code ?? null;
       const indicatorId = indicatorCode ? (codeToId.get(indicatorCode) ?? null) : null;
@@ -361,6 +491,10 @@ export async function fetchForexFactoryWeek(
           indicatorId,
           indicatorCode,
           variant: resolution?.variant ?? null,
+          // Unmapped events (resolution null) are always primary — companion
+          // is a designation ON a specific mapped title, meaningless without
+          // a resolution to carry it.
+          isPrimary: resolution?.isPrimary ?? true,
           fetchedVia: log.id,
         });
         if (calendarResult.action === 'inserted') calendarInserted += 1;

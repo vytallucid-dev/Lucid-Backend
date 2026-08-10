@@ -335,6 +335,18 @@ model CalendarEvent {
   // The registered release variant (flash/final/prelim/...) this occurrence
   // denotes, or null for a single-release indicator. Mirrors DataPoint.variant.
   variant       String? @map("variant") @db.VarChar(20)
+  // Companion-event designation (see the COMPANION EVENTS doc in
+  // forex-factory-event-mapping.ts). true for every mapped row except the
+  // small set of companion titles (e.g. AU_RBA_RATE's "RBA Rate Statement"),
+  // where one real-world release sends two calendar rows at the same
+  // instant. Denormalised from the mapping table at ingest time — same
+  // reasoning as indicatorCode above, so the overdue resolver and calendar
+  // render can read it without a join back to the mapping table.
+  //
+  // Defaults true so every unmapped row (indicatorId IS NULL) and every
+  // pre-migration row is primary by default — companion is an opt-IN
+  // designation on a handful of known titles, never the default state.
+  isPrimary     Boolean @default(true) @map("is_primary")
 
   firstSeenAt DateTime @default(now()) @map("first_seen_at")
   lastSeenAt  DateTime @updatedAt @map("last_seen_at")

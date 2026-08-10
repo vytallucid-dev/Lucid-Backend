@@ -44,6 +44,7 @@ import {
   parseForexFactoryInstant,
   fetchForexFactoryWeek,
   resolveRunStatus,
+  collapseNearDuplicates,
 } from '@modules/edgefinder/services/forex-factory-indicator.service';
 
 const mockedFindMany = prisma.indicator.findMany as unknown as ReturnType<typeof vi.fn>;
@@ -411,5 +412,281 @@ describe('fetchForexFactoryWeek', () => {
     expect(call.forecastValue).toBeNull();
     expect((call.sourceMetadata as Record<string, unknown>).rate_level).toBe(5.25);
     expect((call.sourceMetadata as Record<string, unknown>).first_release).toBe(true);
+  });
+});
+
+describe('collapseNearDuplicates — Fix 2: in-fetch near-duplicate collapse', () => {
+  // The exact live case: identical title, identical country, 60 seconds
+  // apart, one placeholder (no previous/forecast) and one real row.
+  it('collapses the observed US_ADP pair (60s apart) to the row carrying previousRaw', () => {
+    const placeholder = makeEvent({
+      title: 'ADP Weekly Employment Change',
+      country: 'USD',
+      date: '2026-08-11T08:15:00-04:00',
+      forecast: '',
+      previous: '',
+    });
+    const real = makeEvent({
+      title: 'ADP Weekly Employment Change',
+      country: 'USD',
+      date: '2026-08-11T08:16:00-04:00',
+      forecast: '',
+      previous: '15.0K',
+    });
+
+    const result = collapseNearDuplicates([placeholder, real]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].previous).toBe('15.0K');
+    expect(result[0].date).toBe('2026-08-11T08:16:00-04:00');
+  });
+
+  it('collapses regardless of feed order (real row first, placeholder second)', () => {
+    const real = makeEvent({
+      title: 'ADP Weekly Employment Change',
+      country: 'USD',
+      date: '2026-08-11T08:16:00-04:00',
+      previous: '15.0K',
+    });
+    const placeholder = makeEvent({
+      title: 'ADP Weekly Employment Change',
+      country: 'USD',
+      date: '2026-08-11T08:15:00-04:00',
+      previous: '',
+    });
+
+    const result = collapseNearDuplicates([real, placeholder]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].previous).toBe('15.0K');
+  });
+
+  it('does NOT collapse a genuine reschedule — same title, hours apart', () => {
+    const original = makeEvent({
+      title: 'Core CPI m/m',
+      country: 'USD',
+      date: '2026-08-12T08:30:00-04:00',
+      previous: '0.2%',
+    });
+    const rescheduled = makeEvent({
+      title: 'Core CPI m/m',
+      country: 'USD',
+      date: '2026-08-12T14:30:00-04:00', // 6 hours later — a real reschedule
+      previous: '0.2%',
+    });
+
+    const result = collapseNearDuplicates([original, rescheduled]);
+
+    expect(result).toHaveLength(2);
+    expect(result.map((e) => e.date)).toEqual([
+      '2026-08-12T08:30:00-04:00',
+      '2026-08-12T14:30:00-04:00',
+    ]);
+  });
+
+  it('does NOT collapse two events exactly at the 5-minute boundary plus one second', () => {
+    // Window is <=5min INCLUSIVE at exactly 5:00, so use 5:01 to land
+    // unambiguously outside it and assert the boundary is respected, not
+    // just "approximately 5 minutes."
+    const first = makeEvent({
+      title: 'Retail Sales m/m',
+      country: 'USD',
+      date: '2026-08-14T08:30:00-04:00',
+    });
+    const second = makeEvent({
+      title: 'Retail Sales m/m',
+      country: 'USD',
+      date: '2026-08-14T08:35:01-04:00', // 5 min 1 sec later
+    });
+
+    const result = collapseNearDuplicates([first, second]);
+    expect(result).toHaveLength(2);
+  });
+
+  it('DOES collapse two events exactly at the 5-minute boundary (inclusive)', () => {
+    const first = makeEvent({
+      title: 'Retail Sales m/m',
+      country: 'USD',
+      date: '2026-08-14T08:30:00-04:00',
+      previous: '',
+    });
+    const second = makeEvent({
+      title: 'Retail Sales m/m',
+      country: 'USD',
+      date: '2026-08-14T08:35:00-04:00', // exactly 5 min later
+      previous: '0.1%',
+    });
+
+    const result = collapseNearDuplicates([first, second]);
+    expect(result).toHaveLength(1);
+    expect(result[0].previous).toBe('0.1%');
+  });
+
+  // THE companion-interaction check the user asked to be verified, not
+  // assumed: AU_RBA_RATE's "Cash Rate" and "RBA Rate Statement" share an
+  // exact instant but are DIFFERENT titles. collapseNearDuplicates groups by
+  // (country, title) — an exact string match — so these must never merge,
+  // which would silently undo the Fix 1 companion designation.
+  it('does NOT collapse AU_RBA_RATE companion pair despite sharing the exact same instant', () => {
+    const cashRate = makeEvent({
+      title: 'Cash Rate',
+      country: 'AUD',
+      date: '2026-08-11T00:30:00-04:00',
+      forecast: '4.35%',
+      previous: '4.35%',
+    });
+    const rateStatement = makeEvent({
+      title: 'RBA Rate Statement',
+      country: 'AUD',
+      date: '2026-08-11T00:30:00-04:00', // identical instant
+      forecast: '',
+      previous: '',
+    });
+
+    const result = collapseNearDuplicates([cashRate, rateStatement]);
+
+    expect(result).toHaveLength(2);
+    expect(result.map((e) => e.title).sort()).toEqual(['Cash Rate', 'RBA Rate Statement']);
+  });
+
+  it('does not collapse across different countries with the same title', () => {
+    const usdEvent = makeEvent({ title: 'CPI y/y', country: 'USD', date: '2026-08-12T08:30:00-04:00' });
+    const gbpEvent = makeEvent({ title: 'CPI y/y', country: 'GBP', date: '2026-08-12T08:31:00-04:00' });
+
+    const result = collapseNearDuplicates([usdEvent, gbpEvent]);
+    expect(result).toHaveLength(2);
+  });
+
+  it('is a no-op on a feed with no duplicates', () => {
+    const events = [
+      makeEvent({ title: 'CPI y/y', country: 'USD', date: '2026-08-12T08:30:00-04:00' }),
+      makeEvent({ title: 'PPI m/m', country: 'USD', date: '2026-08-13T08:30:00-04:00' }),
+    ];
+    const result = collapseNearDuplicates(events);
+    expect(result).toHaveLength(2);
+  });
+
+  it('falls back to the latest instant when neither row in a cluster has populated fields', () => {
+    const first = makeEvent({
+      title: 'FOMC Member Hammack Speaks',
+      country: 'USD',
+      date: '2026-08-10T15:00:00-04:00',
+      forecast: '',
+      previous: '',
+    });
+    const second = makeEvent({
+      title: 'FOMC Member Hammack Speaks',
+      country: 'USD',
+      date: '2026-08-10T15:01:00-04:00',
+      forecast: '',
+      previous: '',
+    });
+
+    const result = collapseNearDuplicates([first, second]);
+    expect(result).toHaveLength(1);
+    expect(result[0].date).toBe('2026-08-10T15:01:00-04:00'); // latest wins
+  });
+});
+
+describe('fetchForexFactoryWeek — Fix 2: collapse runs before the per-event upsert loop', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedLogStart.mockResolvedValue({ id: 'log-1' });
+    mockedLogComplete.mockResolvedValue(undefined);
+    mockedFindFirst.mockResolvedValue(null);
+    mockedCalendarUpsert.mockResolvedValue({ action: 'inserted', event: {} });
+  });
+
+  it('the US_ADP placeholder/real pair reaches calendarEventsRepository.upsert exactly ONCE', async () => {
+    mockedGetCalendar.mockResolvedValue({
+      events: [
+        makeEvent({
+          title: 'ADP Weekly Employment Change',
+          country: 'USD',
+          date: '2026-08-11T08:15:00-04:00',
+          forecast: '',
+          previous: '',
+        }),
+        makeEvent({
+          title: 'ADP Weekly Employment Change',
+          country: 'USD',
+          date: '2026-08-11T08:16:00-04:00',
+          forecast: '',
+          previous: '15.0K',
+        }),
+      ],
+      requestUrl: '',
+      fetchedAt: new Date(),
+      responseSizeBytes: 100,
+    });
+    mockedFindMany.mockResolvedValue([{ id: 'ind-adp', code: 'US_ADP' }]);
+
+    const result = await fetchForexFactoryWeek('manual', null);
+
+    // totalEvents reports the RAW feed count — telemetry about what FF sent,
+    // not about how many occurrences got written (see the doc in
+    // fetchForexFactoryWeek on this).
+    expect(result.totalEvents).toBe(2);
+    expect(mockedCalendarUpsert).toHaveBeenCalledTimes(1);
+    const call = mockedCalendarUpsert.mock.calls[0][0];
+    expect(call.previousRaw).toBe('15.0K');
+    expect(call.title).toBe('ADP Weekly Employment Change');
+  });
+
+  it('a genuinely rescheduled event (hours apart) still reaches upsert TWICE', async () => {
+    mockedGetCalendar.mockResolvedValue({
+      events: [
+        makeEvent({
+          title: 'Core CPI m/m',
+          country: 'USD',
+          date: '2026-08-12T08:30:00-04:00',
+        }),
+        makeEvent({
+          title: 'Core CPI m/m',
+          country: 'USD',
+          date: '2026-08-12T14:30:00-04:00',
+        }),
+      ],
+      requestUrl: '',
+      fetchedAt: new Date(),
+      responseSizeBytes: 100,
+    });
+    mockedFindMany.mockResolvedValue([]);
+
+    await fetchForexFactoryWeek('manual', null);
+
+    expect(mockedCalendarUpsert).toHaveBeenCalledTimes(2);
+  });
+
+  it('AU_RBA_RATE companion pair (same instant, different titles) both reach upsert with correct isPrimary', async () => {
+    mockedGetCalendar.mockResolvedValue({
+      events: [
+        makeEvent({
+          title: 'Cash Rate',
+          country: 'AUD',
+          date: '2026-08-11T00:30:00-04:00',
+          forecast: '4.35%',
+          previous: '4.35%',
+        }),
+        makeEvent({
+          title: 'RBA Rate Statement',
+          country: 'AUD',
+          date: '2026-08-11T00:30:00-04:00',
+        }),
+      ],
+      requestUrl: '',
+      fetchedAt: new Date(),
+      responseSizeBytes: 100,
+    });
+    mockedFindMany.mockResolvedValue([{ id: 'ind-rba', code: 'AU_RBA_RATE' }]);
+
+    await fetchForexFactoryWeek('manual', null);
+
+    expect(mockedCalendarUpsert).toHaveBeenCalledTimes(2);
+    const calls = mockedCalendarUpsert.mock.calls.map((c) => c[0]);
+    const cashRateCall = calls.find((c) => c.title === 'Cash Rate');
+    const statementCall = calls.find((c) => c.title === 'RBA Rate Statement');
+    expect(cashRateCall.isPrimary).toBe(true);
+    expect(statementCall.isPrimary).toBe(false);
   });
 });

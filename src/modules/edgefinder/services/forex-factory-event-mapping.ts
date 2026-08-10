@@ -51,20 +51,96 @@
  *
  * Do not "helpfully" add these. They are intended to fall to the unmapped
  * queue permanently, and their presence there is correct behaviour, not a gap.
+ *
+ * ---------------------------------------------------------------------------
+ * COMPANION EVENTS — one release, two calendar rows, same instant
+ * ---------------------------------------------------------------------------
+ * A handful of codes are deliberately registered under TWO titles because
+ * Forex Factory itself sends the one real-world release as two separate
+ * calendar rows at the same scheduledAt. Both mappings are correct — the
+ * titles genuinely describe the same release — but leaving both as
+ * undifferentiated `one()` entries means the row downstream (overdue
+ * resolver, badge, calendar) treats them as two independent occurrences of
+ * one indicator, demanding two data entries for one number.
+ *
+ * The `companion()` helper marks the SECONDARY title. Exactly one title per
+ * code is primary (the plain `one()` call, no flag needed — it's the
+ * default); the rest are `companion()`. Primary drives overdue/due-today/the
+ * badge; companion is context-only and can never go overdue (see
+ * overdue-resolver.ts's isPrimary filter).
+ *
+ *   AU_RBA_RATE   primary "Cash Rate" (carries the number), companion
+ *                 "RBA Rate Statement"
+ *   UK_GDP_MOM    primary "GDP m/m" (the tracked monthly series), companion
+ *                 "Prelim GDP q/q" (a quarterly print that happens to share
+ *                 the instant — see the pre-existing note on UK_GDP_MOM below)
+ *   JP_BOJ_RATE   primary "BOJ Policy Rate" (carries the number), companion
+ *                 "Monetary Policy Statement"
+ *
+ * NOT companion pairs, despite also having >1 one() title for their code —
+ * each is a DIFFERENT bug shape, deliberately left untouched here:
+ *
+ *   US_PCE_YOY   "Core PCE Price Index y/y" (primary — matches the tracked
+ *                _YOY series) and "Core PCE Price Index m/m" are titled
+ *                after the SAME release instant, which makes this look like
+ *                a companion case — but m/m is a different measure than the
+ *                tracked y/y line, not a second row of the same number. This
+ *                spec elsewhere explicitly rejects wrong-cut mappings (see
+ *                the "Core CPI m/m" rejection test). The m/m entry is most
+ *                likely a mis-registration that should never have mapped to
+ *                this code at all, not a companion to mark. Flagged, not
+ *                removed, pending its own fix.
+ *   EU_CPI_YOY   "Final CPI y/y" and "CPI Flash Estimate y/y" are Eurostat's
+ *                FINAL and FLASH HICP prints — released ~2 weeks apart, not
+ *                the same instant. This should be a rung() ladder (like
+ *                EU_MFG_PMI's flash/final) but is currently two one()
+ *                registrations with no variant distinguishing them, so Final
+ *                silently overwrites Flash on the same DataPoint key. This
+ *                is a scoring-data collision, not a calendar-display
+ *                duplicate — needs its own ladder-registration fix.
+ *   US_ADP       "ADP Weekly Employment Change" and "ADP Non-Farm Employment
+ *                Change" are genuinely different release cadences (weekly vs
+ *                monthly) sharing one code, confirmed by stored data landing
+ *                on different days. Not a companion pair. (The actual
+ *                duplicate-ROW bug — two rows of the SAME weekly title one
+ *                minute apart — is a Fix 2 near-duplicate-collapse problem,
+ *                unrelated to this multi-title grouping.)
+ *   CN_CAIXIN_PMI_MFG  "RatingDog Manufacturing PMI" / "Caixin Manufacturing
+ *                PMI" are an old/new sponsor name for one release (see the
+ *                CNY block's own comment) — the feed sends only ONE spelling
+ *                per fetch, never both. No companion relationship to encode.
  */
 
 export interface FfEventResolution {
   code: string;
   /** Registered variant name, or null for a single-release indicator. */
   variant: string | null;
+  /**
+   * Companion designation — see COMPANION EVENTS below. true for every
+   * registration except the small set of explicitly-marked companion
+   * titles. Ladder rungs (registered via rung()) are always primary: a
+   * variant already distinguishes Flash from Final, so there is no
+   * companion relationship to encode on top of it.
+   */
+  isPrimary: boolean;
 }
 
 type CountryTitleMap = Record<string, Record<string, FfEventResolution>>;
 
-/** Single-release indicator — no variant ladder registered. */
-const one = (code: string): FfEventResolution => ({ code, variant: null });
-/** One rung of a registered release ladder. */
-const rung = (code: string, variant: string): FfEventResolution => ({ code, variant });
+/**
+ * Single-release indicator — no variant ladder registered.
+ * `companion: true` marks a title as the SECONDARY row of a companion pair
+ * (see COMPANION EVENTS below) — every other one() registration is primary
+ * by default, so most call sites never pass the second argument.
+ */
+const one = (code: string, opts?: { companion?: boolean }): FfEventResolution => ({
+  code,
+  variant: null,
+  isPrimary: !opts?.companion,
+});
+/** One rung of a registered release ladder. Always primary — see isPrimary doc above. */
+const rung = (code: string, variant: string): FfEventResolution => ({ code, variant, isPrimary: true });
+const companion = (code: string): FfEventResolution => one(code, { companion: true });
 
 export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
   USD: {
@@ -91,6 +167,10 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
     'Final GDP q/q': rung('US_GDP_QOQ', 'third'),
     // MEDIUM confidence
     'Core PCE Price Index y/y': one('US_PCE_YOY'),
+    // FLAGGED, NOT a companion — see the COMPANION EVENTS doc above. This
+    // maps a DIFFERENT measure (m/m) to the y/y-tracked code, not a second
+    // row of the same release. Left as-is pending its own fix; do not mark
+    // this companion() — that would misrepresent it as a resolved case.
     'Core PCE Price Index m/m': one('US_PCE_YOY'),
   },
 
@@ -141,8 +221,12 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
     'Final Manufacturing PMI': rung('UK_MFG_PMI', 'final'),
     'Final Services PMI': rung('UK_SVC_PMI', 'final'),
     // UK_GDP_MOM is the monthly GDP series and has no registered ladder.
+    // Companion pair (see COMPANION EVENTS above): "GDP m/m" is primary —
+    // it's the tracked monthly series; "Prelim GDP q/q" is a quarterly print
+    // that happens to share the release instant, marked companion so it
+    // renders as context and never independently goes overdue.
     'GDP m/m': one('UK_GDP_MOM'),
-    'Prelim GDP q/q': one('UK_GDP_MOM'),
+    'Prelim GDP q/q': companion('UK_GDP_MOM'),
     'PPI Output m/m': one('UK_PPI_MOM'),
     'Official Bank Rate': one('UK_BOE_RATE'),
   },
@@ -170,8 +254,11 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
     'Average Cash Earnings y/y': rung('JP_CASH_EARNINGS_YOY', 'prelim'),
     'Final Average Cash Earnings y/y': rung('JP_CASH_EARNINGS_YOY', 'final'),
     // LOW
-    'Monetary Policy Statement': one('JP_BOJ_RATE'),
+    // Companion pair (see COMPANION EVENTS above): the BOJ policy statement
+    // and the rate itself publish at the same instant. "BOJ Policy Rate" is
+    // primary — it carries the number, matching the AU_RBA_RATE precedent.
     'BOJ Policy Rate': one('JP_BOJ_RATE'),
+    'Monetary Policy Statement': companion('JP_BOJ_RATE'),
   },
 
   // GAP FILL — the ten AUD indicators. FF sends country "AUD"; the database
@@ -183,8 +270,10 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
     'Unemployment Rate': one('AU_UNEMPLOYMENT'),
     'GDP q/q': one('AU_GDP_QOQ'),
     'Westpac Consumer Sentiment': one('AU_CONSCONF'),
+    // Companion pair (see COMPANION EVENTS above): "Cash Rate" is primary —
+    // it carries the number; "RBA Rate Statement" is companion context.
     'Cash Rate': one('AU_RBA_RATE'),
-    'RBA Rate Statement': one('AU_RBA_RATE'),
+    'RBA Rate Statement': companion('AU_RBA_RATE'),
     // VERIFIED from live feed — FF renamed AU retail sales to this in 2025.
     'Household Spending m/m': one('AU_MHSI_MOM'),
     // AU PMIs carry a Flash/Final ladder (Judo Bank).
