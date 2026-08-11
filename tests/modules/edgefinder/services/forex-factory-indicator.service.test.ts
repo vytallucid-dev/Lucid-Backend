@@ -417,8 +417,13 @@ describe('fetchForexFactoryWeek', () => {
 
 describe('collapseNearDuplicates — Fix 2: in-fetch near-duplicate collapse', () => {
   // The exact live case: identical title, identical country, 60 seconds
-  // apart, one placeholder (no previous/forecast) and one real row.
-  it('collapses the observed US_ADP pair (60s apart) to the row carrying previousRaw', () => {
+  // apart, one placeholder (no previous/forecast) and one real row. Uses the
+  // real historically-observed title string ("ADP Weekly Employment
+  // Change") — collapseNearDuplicates operates on raw feed rows only and
+  // has no dependency on the mapping table, so this stays a faithful
+  // regression case even though that title no longer resolves to an
+  // indicator (see the mapping table's own "deliberately not mapped" fix).
+  it('collapses the observed feed pair (60s apart) to the row carrying previousRaw', () => {
     const placeholder = makeEvent({
       title: 'ADP Weekly Employment Change',
       country: 'USD',
@@ -597,7 +602,50 @@ describe('fetchForexFactoryWeek — Fix 2: collapse runs before the per-event up
     mockedCalendarUpsert.mockResolvedValue({ action: 'inserted', event: {} });
   });
 
-  it('the US_ADP placeholder/real pair reaches calendarEventsRepository.upsert exactly ONCE', async () => {
+  it('a mapped placeholder/real pair (ADP Non-Farm Employment Change) reaches calendarEventsRepository.upsert exactly ONCE', async () => {
+    // Uses the MONTHLY title (still mapped to US_ADP) so this test exercises
+    // collapse-before-upsert on a title that actually resolves to an
+    // indicator — the weekly title used to be the live example of this but
+    // is now deliberately unmapped (see the mapping table fix), so it no
+    // longer demonstrates the mapped-path collapse behaviour this test
+    // targets.
+    mockedGetCalendar.mockResolvedValue({
+      events: [
+        makeEvent({
+          title: 'ADP Non-Farm Employment Change',
+          country: 'USD',
+          date: '2026-08-05T08:15:00-04:00',
+          forecast: '',
+          previous: '',
+        }),
+        makeEvent({
+          title: 'ADP Non-Farm Employment Change',
+          country: 'USD',
+          date: '2026-08-05T08:16:00-04:00',
+          forecast: '',
+          previous: '98K',
+        }),
+      ],
+      requestUrl: '',
+      fetchedAt: new Date(),
+      responseSizeBytes: 100,
+    });
+    mockedFindMany.mockResolvedValue([{ id: 'ind-adp', code: 'US_ADP' }]);
+
+    const result = await fetchForexFactoryWeek('manual', null);
+
+    // totalEvents reports the RAW feed count — telemetry about what FF sent,
+    // not about how many occurrences got written (see the doc in
+    // fetchForexFactoryWeek on this).
+    expect(result.totalEvents).toBe(2);
+    expect(mockedCalendarUpsert).toHaveBeenCalledTimes(1);
+    const call = mockedCalendarUpsert.mock.calls[0][0];
+    expect(call.previousRaw).toBe('98K');
+    expect(call.title).toBe('ADP Non-Farm Employment Change');
+    expect(call.indicatorCode).toBe('US_ADP');
+  });
+
+  it('a near-duplicate pair of the (now unmapped) weekly ADP title still collapses to one row, unmapped', async () => {
     mockedGetCalendar.mockResolvedValue({
       events: [
         makeEvent({
@@ -619,18 +667,16 @@ describe('fetchForexFactoryWeek — Fix 2: collapse runs before the per-event up
       fetchedAt: new Date(),
       responseSizeBytes: 100,
     });
-    mockedFindMany.mockResolvedValue([{ id: 'ind-adp', code: 'US_ADP' }]);
+    mockedFindMany.mockResolvedValue([]); // nothing mapped this fetch
 
     const result = await fetchForexFactoryWeek('manual', null);
 
-    // totalEvents reports the RAW feed count — telemetry about what FF sent,
-    // not about how many occurrences got written (see the doc in
-    // fetchForexFactoryWeek on this).
-    expect(result.totalEvents).toBe(2);
     expect(mockedCalendarUpsert).toHaveBeenCalledTimes(1);
     const call = mockedCalendarUpsert.mock.calls[0][0];
     expect(call.previousRaw).toBe('15.0K');
-    expect(call.title).toBe('ADP Weekly Employment Change');
+    expect(call.indicatorCode).toBeNull();
+    expect(call.isPrimary).toBe(true); // unmapped rows are always primary
+    expect(result.unmappedCount).toBe(1);
   });
 
   it('a genuinely rescheduled event (hours apart) still reaches upsert TWICE', async () => {

@@ -41,7 +41,7 @@ describe('mapEventToIndicator', () => {
   });
 
   it('verified USD entries match exactly', () => {
-    expect(mapEventToIndicator('USD', 'ADP Weekly Employment Change')).toBe('US_ADP');
+    expect(mapEventToIndicator('USD', 'ADP Non-Farm Employment Change')).toBe('US_ADP');
     expect(mapEventToIndicator('USD', 'Federal Funds Rate')).toBe('US_FED_RATE');
     expect(mapEventToIndicator('USD', 'Non-Farm Employment Change')).toBe('US_NFP');
   });
@@ -49,6 +49,28 @@ describe('mapEventToIndicator', () => {
   it('verified GBP entries match exactly', () => {
     expect(mapEventToIndicator('GBP', 'GfK Consumer Confidence')).toBe('UK_GFK');
     expect(mapEventToIndicator('GBP', 'Unemployment Rate')).toBe('UK_UNEMP');
+  });
+});
+
+describe('US_ADP — weekly release deliberately unmapped, monthly unchanged', () => {
+  // "ADP Weekly Employment Change" has no EdgeFinder counterpart and must
+  // resolve exactly like any other untracked title — falling to the
+  // unmapped queue, never to US_ADP.
+  it('"ADP Weekly Employment Change" resolves to null (unmapped)', () => {
+    expect(mapEventToIndicator('USD', 'ADP Weekly Employment Change')).toBeNull();
+    expect(resolveEvent('USD', 'ADP Weekly Employment Change')).toBeNull();
+  });
+
+  // The monthly mapping is the one still tracked — untouched by this fix,
+  // asserted explicitly so a future edit can't silently break it while
+  // "fixing" the weekly title again.
+  it('"ADP Non-Farm Employment Change" still resolves to US_ADP, single-release, primary', () => {
+    expect(mapEventToIndicator('USD', 'ADP Non-Farm Employment Change')).toBe('US_ADP');
+    expect(resolveEvent('USD', 'ADP Non-Farm Employment Change')).toEqual({
+      code: 'US_ADP',
+      variant: null,
+      isPrimary: true,
+    });
   });
 });
 
@@ -259,11 +281,6 @@ describe('Companion events — primary/companion designation', () => {
     expect(resolveEvent('EUR', 'CPI Flash Estimate y/y')?.isPrimary).toBe(true);
   });
 
-  it('US_ADP: both titles remain isPrimary (different cadences, not a companion pair)', () => {
-    expect(resolveEvent('USD', 'ADP Weekly Employment Change')?.isPrimary).toBe(true);
-    expect(resolveEvent('USD', 'ADP Non-Farm Employment Change')?.isPrimary).toBe(true);
-  });
-
   it('CN_CAIXIN_PMI_MFG: both spellings remain isPrimary (never co-occur, no companion needed)', () => {
     expect(resolveEvent('CNY', 'RatingDog Manufacturing PMI')?.isPrimary).toBe(true);
     expect(resolveEvent('CNY', 'Caixin Manufacturing PMI')?.isPrimary).toBe(true);
@@ -299,12 +316,14 @@ describe('Companion events — full-table audit invariant', () => {
     }
   });
 
-  // The three codes actually fixed by this pass — AU_RBA_RATE, UK_GDP_MOM,
-  // JP_BOJ_RATE — are narrowed to EXACTLY one primary. US_PCE_YOY,
-  // EU_CPI_YOY, US_ADP, CN_CAIXIN_PMI_MFG are deliberately excluded from this
-  // stricter check (see the "flagged mis-registration"/"not a companion
-  // pair" tests above) — they still have 2 primaries each, which is correct
-  // for their situation, not a bug this list should catch.
+  // The three codes actually fixed by the companion pass — AU_RBA_RATE,
+  // UK_GDP_MOM, JP_BOJ_RATE — are narrowed to EXACTLY one primary. US_PCE_YOY
+  // and EU_CPI_YOY are deliberately excluded from this stricter check (see
+  // the "flagged mis-registration"/"not a companion pair" tests above) —
+  // they still have 2 primaries each, which is correct for their situation,
+  // not a bug this list should catch. US_ADP is asserted separately below —
+  // it was NEVER a companion case (see the removed-weekly-mapping tests
+  // above); it's back to exactly one title, one primary, by construction.
   it('the three fixed companion codes are narrowed to exactly one primary', async () => {
     const { FF_EVENT_TO_INDICATOR } = await import(
       '@modules/edgefinder/services/forex-factory-event-mapping'
@@ -326,5 +345,17 @@ describe('Companion events — full-table audit invariant', () => {
       expect(flags.length, `${code} should have exactly 2 one() titles`).toBe(2);
       expect(flags.filter(Boolean).length, `${code} should have exactly 1 primary`).toBe(1);
     }
+  });
+
+  it('US_ADP has exactly one one()-registered title now that the weekly mapping is removed', async () => {
+    const { FF_EVENT_TO_INDICATOR } = await import(
+      '@modules/edgefinder/services/forex-factory-event-mapping'
+    );
+
+    const usAdpTitles = Object.values(FF_EVENT_TO_INDICATOR.USD).filter(
+      (r) => r.code === 'US_ADP' && r.variant === null,
+    );
+    expect(usAdpTitles).toHaveLength(1);
+    expect(usAdpTitles[0].isPrimary).toBe(true);
   });
 });

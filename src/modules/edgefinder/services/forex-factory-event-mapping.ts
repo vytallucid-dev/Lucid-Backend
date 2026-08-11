@@ -98,13 +98,6 @@
  *                silently overwrites Flash on the same DataPoint key. This
  *                is a scoring-data collision, not a calendar-display
  *                duplicate — needs its own ladder-registration fix.
- *   US_ADP       "ADP Weekly Employment Change" and "ADP Non-Farm Employment
- *                Change" are genuinely different release cadences (weekly vs
- *                monthly) sharing one code, confirmed by stored data landing
- *                on different days. Not a companion pair. (The actual
- *                duplicate-ROW bug — two rows of the SAME weekly title one
- *                minute apart — is a Fix 2 near-duplicate-collapse problem,
- *                unrelated to this multi-title grouping.)
  *   CN_CAIXIN_PMI_MFG  "RatingDog Manufacturing PMI" / "Caixin Manufacturing
  *                PMI" are an old/new sponsor name for one release (see the
  *                CNY block's own comment) — the feed sends only ONE spelling
@@ -146,7 +139,11 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
   USD: {
     // VERIFIED from real fetch
     'Unemployment Claims': one('US_JOBLESS_CLAIMS'),
-    'ADP Weekly Employment Change': one('US_ADP'),
+    // "ADP Weekly Employment Change" is DELIBERATELY NOT MAPPED. Only the
+    // monthly release ("ADP Non-Farm Employment Change" below) is tracked as
+    // US_ADP; the weekly print has no EdgeFinder counterpart. Falls to the
+    // unmapped queue like any other untracked title — do not "helpfully"
+    // remap it back to US_ADP.
     // HIGH confidence — standard FF naming
     'CPI y/y': one('US_CPI_YOY'),
     'PPI m/m': one('US_PPI_MOM'),
