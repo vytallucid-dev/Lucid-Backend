@@ -2,7 +2,16 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@core/db/prisma';
 import { AppError } from '@core/middleware/error-handler';
 import { toTradeDto, type TradeDto, type TradeWithExecutions } from './serialize';
-import { computeTradeMetrics, sessionFromDate } from './trade-metrics';
+import { computeTradeMetrics, sessionFromDate, type TradeMetrics } from './trade-metrics';
+import { sameScoreDate, snapshotOracleScore, type OracleScoreSource } from './oracle-snapshot';
+import {
+  blockingProblems,
+  checkExecution,
+  checkPlan,
+  type FieldProblem,
+  type WritePath,
+} from './trade-validation';
+import { isForexPairSymbol } from './instrument-scale';
 import type {
   CreateTradeInput,
   UpdateTradeInput,
@@ -20,13 +29,22 @@ function decOrNull(n: number | null | undefined): Prisma.Decimal | null {
   return n == null ? null : new Prisma.Decimal(n);
 }
 
-/** Resolves the pip value for a user's pair symbol (defaults to 10 if unknown). */
-async function pipValueFor(userId: string, symbol: string): Promise<number> {
-  const pair = await prisma.tradingPair.findUnique({
-    where: { userId_symbol: { userId, symbol } },
-    select: { pipValue: true },
-  });
-  return pair ? pair.pipValue.toNumber() : 10;
+/**
+ * Refuses the write if any problem blocks it ON THIS PATH.
+ *
+ * On `create`, everything blocks — a hand-entered trade should be right the
+ * first time. On `edit` and `import`, only genuinely blocking failures refuse;
+ * the rest are allowed through and resurface as integrity flags on the stored
+ * row, which is what makes an already-wrong trade correctable at all.
+ *
+ * The full blocking list travels in `details` so a client can anchor every
+ * message at once; the thrown message names the first so the error stays
+ * specific even where details are stripped.
+ */
+function assertWritable(problems: FieldProblem[], path: WritePath): void {
+  const blocked = blockingProblems(problems, path);
+  if (blocked.length === 0) return;
+  throw new AppError(400, blocked[0].message, 'VALIDATION_ERROR', { problems: blocked });
 }
 
 async function assertAccountOwned(userId: string, accountId: string): Promise<void> {
@@ -46,7 +64,11 @@ async function loadOwnedTrade(userId: string, id: string): Promise<TradeWithExec
   return trade;
 }
 
-async function loadOwnedExecution(userId: string, tradeId: string, executionId: string) {
+async function loadOwnedExecution(
+  userId: string,
+  tradeId: string,
+  executionId: string,
+): Promise<{ trade: TradeWithExecutions; execution: TradeWithExecutions['executions'][number] }> {
   const trade = await loadOwnedTrade(userId, tradeId);
   const execution = trade.executions.find((e) => e.id === executionId);
   if (!execution) throw new AppError(404, 'Execution not found', 'EXECUTION_NOT_FOUND');
@@ -54,16 +76,20 @@ async function loadOwnedExecution(userId: string, tradeId: string, executionId: 
 }
 
 /**
- * Derives an execution's totalPips/blendedPnl/blendedRr. Risk is measured
- * against the *idea's* stop (trade.plannedSl) — the invalidation level is
- * shared across accounts — while pips/P&L are measured from this execution's
- * own actual entry and exit. Because blendedRr algebraically reduces to
- * totalPips / riskPips (lot size and pip value cancel), it is comparable
- * across accounts of different sizes, which is what makes R the right unit
- * for edge statistics.
+ * Derives an execution's totalPips/blendedRr. Risk is measured against the
+ * *idea's* stop (trade.plannedSl) — the invalidation level is shared across
+ * accounts — while the distance is measured from this execution's own actual
+ * entry and exit. blendedRr reduces to totalPips / riskPips (pip value and lot
+ * size cancel), which is what makes R comparable across accounts of different
+ * sizes and therefore the right unit for edge statistics.
+ *
+ * The distance unit follows the instrument: pips for forex, whole points for
+ * indices and metals. Resolved from the asset registry, which is cached
+ * in-process, so this stays a cheap lookup rather than a per-write query.
+ *
+ * P&L is deliberately absent: it is entered by hand, never derived from prices.
  */
 async function computeExecutionMetrics(
-  userId: string,
   pair: string,
   plannedSl: number,
   execEntryPrice: number,
@@ -72,20 +98,113 @@ async function computeExecutionMetrics(
   mainExitPrice: number | null | undefined,
   partialExitPrice: number | null | undefined,
   partialExitLotPct: number | null | undefined,
-  lotSize: number,
-) {
-  const pipValue = await pipValueFor(userId, pair);
+): Promise<TradeMetrics> {
   return computeTradeMetrics({
     direction,
     symbol: pair,
+    isForexPair: await isForexPairSymbol(pair),
     entryPrice: execEntryPrice,
     slPrice: plannedSl,
     mainExitPrice: isClosed ? (mainExitPrice ?? null) : null,
     partialExitPrice: partialExitPrice ?? null,
     partialExitLotPct: partialExitLotPct ?? null,
-    lotSize,
-    pipValue,
   });
+}
+
+// ─── Oracle snapshot columns ────────────────────────────────────────────────
+//
+// Written once, keyed to a date, never recomputed. Re-reading a trade never
+// changes them; only a change to the date the snapshot is addressed to (or to
+// the pair it is addressed for) takes a fresh one. That is the whole point: a
+// later revision to the Oracle's history must not silently rewrite the context
+// a past trade was taken in.
+
+interface EntrySnapshotColumns {
+  oracleScoreAtEntry: number | null;
+  oracleScoreEntryDate: Date | null;
+  oracleScoreEntryCapturedAt: Date | null;
+  oracleScoreEntrySource: OracleScoreSource | null;
+}
+
+interface ExitSnapshotColumns {
+  oracleScoreAtExit: number | null;
+  oracleScoreExitDate: Date | null;
+  oracleScoreExitCapturedAt: Date | null;
+}
+
+/** A user-supplied score, stored verbatim. Null means "no score for this trade". */
+function manualEntrySnapshot(score: number | null): EntrySnapshotColumns {
+  return score == null
+    ? {
+        oracleScoreAtEntry: null,
+        oracleScoreEntryDate: null,
+        oracleScoreEntryCapturedAt: null,
+        oracleScoreEntrySource: null,
+      }
+    : {
+        oracleScoreAtEntry: score,
+        oracleScoreEntryDate: null, // a hand-entered score is addressed to no date
+        oracleScoreEntryCapturedAt: new Date(),
+        oracleScoreEntrySource: 'manual',
+      };
+}
+
+/** Reads the Oracle for `pair` on `dateOpened` and freezes the result. */
+async function takeEntrySnapshot(pair: string, dateOpened: Date): Promise<EntrySnapshotColumns> {
+  const snap = await snapshotOracleScore(pair, dateOpened);
+  return {
+    oracleScoreAtEntry: snap.score,
+    // The date is recorded even when no score was found, so the UI can say
+    // which day came up empty rather than leaving it ambiguous.
+    oracleScoreEntryDate: snap.date,
+    oracleScoreEntryCapturedAt: snap.capturedAt,
+    oracleScoreEntrySource: snap.score == null ? null : 'snapshot',
+  };
+}
+
+async function takeExitSnapshot(pair: string, dateClosed: Date): Promise<ExitSnapshotColumns> {
+  const snap = await snapshotOracleScore(pair, dateClosed);
+  return {
+    oracleScoreAtExit: snap.score,
+    oracleScoreExitDate: snap.date,
+    oracleScoreExitCapturedAt: snap.capturedAt,
+  };
+}
+
+const CLEARED_EXIT_SNAPSHOT: ExitSnapshotColumns = {
+  oracleScoreAtExit: null,
+  oracleScoreExitDate: null,
+  oracleScoreExitCapturedAt: null,
+};
+
+/**
+ * The exit snapshot for an execution being written.
+ *
+ * Re-snapshots only when the fact it describes changes — a different exit date,
+ * a different pair, or no snapshot taken yet. An unchanged exit date keeps the
+ * stored value untouched even if the Oracle has since revised that day.
+ */
+async function resolveExitSnapshot(
+  pair: string,
+  effectiveClosed: boolean,
+  dateClosed: Date | null,
+  existing: {
+    oracleScoreExitDate: Date | null;
+    oracleScoreAtExit: number | null;
+    oracleScoreExitCapturedAt: Date | null;
+  } | null,
+  pairChanged: boolean,
+): Promise<ExitSnapshotColumns> {
+  if (!effectiveClosed || !dateClosed) return CLEARED_EXIT_SNAPSHOT;
+  const alreadySnapshotted = existing?.oracleScoreExitCapturedAt != null;
+  if (alreadySnapshotted && !pairChanged && sameScoreDate(existing.oracleScoreExitDate, dateClosed)) {
+    return {
+      oracleScoreAtExit: existing.oracleScoreAtExit,
+      oracleScoreExitDate: existing.oracleScoreExitDate,
+      oracleScoreExitCapturedAt: existing.oracleScoreExitCapturedAt,
+    };
+  }
+  return takeExitSnapshot(pair, dateClosed);
 }
 
 // ─── Trades (ideas) ──────────────────────────────────────────────────────────
@@ -106,9 +225,15 @@ export async function listTrades(userId: string, accountId?: string): Promise<Tr
     include: includeExecutions,
     orderBy: { dateOpened: 'desc' },
   });
-  if (!accountId) return trades.map(toTradeDto);
+  if (!accountId) return trades.map((t) => toTradeDto(t));
+  // The narrowed view still reports the idea's integrity over ALL its fills —
+  // a flag must not disappear because the offending fill belongs to another
+  // account.
   return trades.map((t) =>
-    toTradeDto({ ...t, executions: t.executions.filter((e) => e.accountId === accountId) }),
+    toTradeDto(
+      { ...t, executions: t.executions.filter((e) => e.accountId === accountId) },
+      t.executions,
+    ),
   );
 }
 
@@ -127,11 +252,17 @@ export async function createTrade(userId: string, input: CreateTradeInput): Prom
   const markedPrimaryIdx = input.executions.findIndex((e) => e.is_primary);
   const primaryIdx = markedPrimaryIdx >= 0 ? markedPrimaryIdx : 0;
 
+  // Omitting oracle_score_at_entry asks the server to snapshot; sending it
+  // (including as null) is an explicit override, stored verbatim.
+  const entrySnapshot =
+    input.oracle_score_at_entry !== undefined
+      ? manualEntrySnapshot(input.oracle_score_at_entry)
+      : await takeEntrySnapshot(input.pair, dateOpened);
+
   const executionRows = await Promise.all(
     input.executions.map(async (ex, idx) => {
       const isClosed = ex.is_closed && ex.main_exit_price != null;
       const metrics = await computeExecutionMetrics(
-        userId,
         input.pair,
         input.planned_sl,
         ex.entry_price,
@@ -140,10 +271,11 @@ export async function createTrade(userId: string, input: CreateTradeInput): Prom
         ex.main_exit_price,
         ex.partial_exit_price,
         ex.partial_exit_lot_pct,
-        ex.lot_size,
       );
-      const resultPnl = isClosed && ex.net_pnl != null ? ex.net_pnl : metrics.blendedPnl;
       const dateClosed = isClosed ? (ex.date_closed ? new Date(ex.date_closed) : new Date()) : null;
+      const exitSnapshot = isClosed && dateClosed
+        ? await takeExitSnapshot(input.pair, dateClosed)
+        : CLEARED_EXIT_SNAPSHOT;
       return {
         accountId: ex.account_id,
         isPrimary: idx === primaryIdx,
@@ -156,8 +288,11 @@ export async function createTrade(userId: string, input: CreateTradeInput): Prom
         exitType: ex.exit_type,
         dateClosed,
         totalPips: dec(metrics.totalPips),
-        blendedPnl: dec(resultPnl),
+        // Realised P&L is whatever the user typed. Not closed, or closed with
+        // no figure entered yet → 0. Never derived from prices.
+        blendedPnl: dec(isClosed ? (ex.net_pnl ?? 0) : 0),
         blendedRr: dec(metrics.blendedRr),
+        ...exitSnapshot,
       };
     }),
   );
@@ -176,10 +311,10 @@ export async function createTrade(userId: string, input: CreateTradeInput): Prom
         conviction: input.conviction,
         dateOpened,
         session,
-        fundamentalScore: input.fundamental_score ?? null,
         screenshots: input.screenshots ?? [],
         psychology: input.psychology ?? null,
         notes: input.notes ?? null,
+        ...entrySnapshot,
       },
     });
     await tx.execution.createMany({
@@ -200,17 +335,51 @@ export async function updateTrade(
 
   const pair = input.pair ?? existing.pair;
   const direction = (input.direction ?? existing.direction) as 'Buy' | 'Sell';
+  const plannedEntry = input.planned_entry ?? existing.plannedEntry.toNumber();
   const plannedSl = input.planned_sl ?? existing.plannedSl.toNumber();
+  const plannedMainTp = input.planned_main_tp ?? existing.plannedMainTp.toNumber();
+  const plannedFirstTp =
+    input.planned_first_tp !== undefined
+      ? input.planned_first_tp
+      : existing.plannedFirstTp
+        ? existing.plannedFirstTp.toNumber()
+        : null;
   const dateOpened = input.date_opened ? new Date(input.date_opened) : existing.dateOpened;
 
-  // Pair and planned stop feed every execution's pip-multiplier / risk-distance
-  // math. If either changes, pips and R:R for every execution are recomputed
-  // from that execution's own stored prices. P&L stays sticky (matches the
-  // pre-split convention: a manual/derived P&L is never silently recomputed
-  // by an unrelated edit — only a fresh net_pnl on that execution changes it).
+  // A patch touches a few fields, but the rules are about the whole plan — so
+  // they run against the merged result, not the patch in isolation. Otherwise
+  // flipping direction alone would leave a stop on the wrong side unchallenged.
+  assertWritable(
+    checkPlan({ direction, plannedEntry, plannedSl, plannedFirstTp, plannedMainTp, dateOpened }),
+    'edit',
+  );
+  // Moving the entry date forwards can strand an already-recorded exit behind it.
+  assertWritable(
+    existing.executions.flatMap((ex) =>
+      checkExecution({
+        riskPct: ex.riskPct.toNumber(),
+        isClosed: ex.dateClosed != null,
+        mainExitPrice: ex.mainExitPrice ? ex.mainExitPrice.toNumber() : null,
+        partialExitPrice: ex.partialExitPrice ? ex.partialExitPrice.toNumber() : null,
+        partialExitLotPct: ex.partialExitLotPct ? ex.partialExitLotPct.toNumber() : null,
+        dateClosed: ex.dateClosed,
+        dateOpened,
+      }).filter((p) => p.field === 'date_closed'),
+    ),
+    'edit',
+  );
+
+  const pairChanged = input.pair !== undefined && input.pair !== existing.pair;
+  const dateOpenedChanged = !sameScoreDate(existing.dateOpened, dateOpened);
+
+  // Pair, planned stop and direction feed every execution's pip-multiplier,
+  // risk distance and sign. If any changes, pips and R:R for every execution
+  // are recomputed from that execution's own stored prices. P&L never moves —
+  // it is the user's number, and only the user changes it.
   const metricsAffectingFieldsChanged =
-    (input.pair !== undefined && input.pair !== existing.pair) ||
-    (input.planned_sl !== undefined && input.planned_sl !== existing.plannedSl.toNumber());
+    pairChanged ||
+    (input.planned_sl !== undefined && input.planned_sl !== existing.plannedSl.toNumber()) ||
+    (input.direction !== undefined && input.direction !== existing.direction);
 
   const data: Prisma.TradeUpdateInput = {
     model: input.model ?? existing.model,
@@ -224,10 +393,25 @@ export async function updateTrade(
   if (input.planned_entry !== undefined) data.plannedEntry = dec(input.planned_entry);
   if (input.planned_first_tp !== undefined) data.plannedFirstTp = decOrNull(input.planned_first_tp);
   if (input.planned_main_tp !== undefined) data.plannedMainTp = dec(input.planned_main_tp);
-  if (input.fundamental_score !== undefined) data.fundamentalScore = input.fundamental_score;
   if (input.psychology !== undefined) data.psychology = input.psychology;
   if (input.notes !== undefined) data.notes = input.notes;
   if (input.screenshots !== undefined) data.screenshots = input.screenshots;
+
+  // Entry snapshot. Order matters:
+  //   an explicit, *changed* score is the user overriding — it wins outright;
+  //   an explicit score equal to what is stored is an untouched edit form
+  //     being re-saved, and must not rewrite provenance;
+  //   otherwise a changed entry date or pair means the snapshot now addresses
+  //     a different fact, so a fresh one is taken;
+  //   otherwise nothing is written and the stored snapshot stands.
+  const overrideSent = input.oracle_score_at_entry !== undefined;
+  const overrideDiffers =
+    overrideSent && (input.oracle_score_at_entry ?? null) !== existing.oracleScoreAtEntry;
+  if (overrideDiffers) {
+    Object.assign(data, manualEntrySnapshot(input.oracle_score_at_entry ?? null));
+  } else if (dateOpenedChanged || pairChanged) {
+    Object.assign(data, await takeEntrySnapshot(pair, dateOpened));
+  }
 
   const updated = await prisma.$transaction(async (tx) => {
     const trade = await tx.trade.update({ where: { id }, data });
@@ -236,7 +420,6 @@ export async function updateTrade(
       for (const ex of existing.executions) {
         const isClosed = ex.dateClosed != null && ex.mainExitPrice != null;
         const metrics = await computeExecutionMetrics(
-          userId,
           pair,
           plannedSl,
           ex.entryPrice.toNumber(),
@@ -245,11 +428,23 @@ export async function updateTrade(
           ex.mainExitPrice ? ex.mainExitPrice.toNumber() : null,
           ex.partialExitPrice ? ex.partialExitPrice.toNumber() : null,
           ex.partialExitLotPct ? ex.partialExitLotPct.toNumber() : null,
-          ex.lotSize.toNumber(),
+        );
+        // The exit snapshot is addressed to a pair as well as a date, so a
+        // pair change re-takes it; a stop or direction change does not.
+        const exitSnapshot = await resolveExitSnapshot(
+          pair,
+          isClosed,
+          ex.dateClosed,
+          ex,
+          pairChanged,
         );
         await tx.execution.update({
           where: { id: ex.id },
-          data: { totalPips: dec(metrics.totalPips), blendedRr: dec(metrics.blendedRr) },
+          data: {
+            totalPips: dec(metrics.totalPips),
+            blendedRr: dec(metrics.blendedRr),
+            ...exitSnapshot,
+          },
         });
       }
     }
@@ -276,8 +471,24 @@ export async function addExecution(
   await assertAccountOwned(userId, input.account_id);
 
   const isClosed = input.is_closed && input.main_exit_price != null;
+  const dateClosed = isClosed ? (input.date_closed ? new Date(input.date_closed) : new Date()) : null;
+
+  // The one rule a standalone execution body cannot judge for itself. Adding a
+  // fill is hand entry, so it is held to create-strictness like any other.
+  assertWritable(
+    checkExecution({
+      riskPct: input.risk_pct,
+      isClosed: input.is_closed,
+      mainExitPrice: input.main_exit_price ?? null,
+      partialExitPrice: input.partial_exit_price ?? null,
+      partialExitLotPct: input.partial_exit_lot_pct ?? null,
+      dateClosed,
+      dateOpened: trade.dateOpened,
+    }),
+    'create',
+  );
+
   const metrics = await computeExecutionMetrics(
-    userId,
     trade.pair,
     trade.plannedSl.toNumber(),
     input.entry_price,
@@ -286,10 +497,9 @@ export async function addExecution(
     input.main_exit_price,
     input.partial_exit_price,
     input.partial_exit_lot_pct,
-    input.lot_size,
   );
-  const resultPnl = isClosed && input.net_pnl != null ? input.net_pnl : metrics.blendedPnl;
-  const dateClosed = isClosed ? (input.date_closed ? new Date(input.date_closed) : new Date()) : null;
+  const exitSnapshot =
+    isClosed && dateClosed ? await takeExitSnapshot(trade.pair, dateClosed) : CLEARED_EXIT_SNAPSHOT;
   const wantsPrimary = input.is_primary === true;
 
   await prisma.$transaction(async (tx) => {
@@ -310,8 +520,9 @@ export async function addExecution(
         exitType: input.exit_type,
         dateClosed,
         totalPips: dec(metrics.totalPips),
-        blendedPnl: dec(resultPnl),
+        blendedPnl: dec(isClosed ? (input.net_pnl ?? 0) : 0),
         blendedRr: dec(metrics.blendedRr),
+        ...exitSnapshot,
       },
     });
   });
@@ -338,6 +549,7 @@ export async function updateExecution(
 
   const entryPrice = input.entry_price ?? execution.entryPrice.toNumber();
   const lotSize = input.lot_size ?? execution.lotSize.toNumber();
+  const riskPct = input.risk_pct ?? execution.riskPct.toNumber();
   const wasClosed = execution.dateClosed != null;
   const isClosed = input.is_closed ?? wasClosed;
 
@@ -368,8 +580,27 @@ export async function updateExecution(
     dateClosed = input.date_closed ? new Date(input.date_closed) : (execution.dateClosed ?? new Date());
   }
 
+  // Rules run against the merge of the patch and the stored row, so closing a
+  // trade by sending only `is_closed: true` is still caught for a missing exit
+  // price, and an exit date is still checked against the idea's entry date.
+  //
+  // Edit path: a missing exit price still refuses, but an exit that lands
+  // before the entry date is flagged and saved. Correcting a mistyped exit year
+  // requires saving the row, so refusing that save makes the typo permanent.
+  assertWritable(
+    checkExecution({
+      riskPct,
+      isClosed,
+      mainExitPrice,
+      partialExitPrice: effectiveClosed ? partialExitPrice : null,
+      partialExitLotPct: effectiveClosed ? partialExitLotPct : null,
+      dateClosed,
+      dateOpened: trade.dateOpened,
+    }),
+    'edit',
+  );
+
   const metrics = await computeExecutionMetrics(
-    userId,
     trade.pair,
     trade.plannedSl.toNumber(),
     entryPrice,
@@ -378,21 +609,27 @@ export async function updateExecution(
     mainExitPrice,
     partialExitPrice,
     partialExitLotPct,
-    lotSize,
   );
-  // Realized P&L is the user-entered net_pnl (stored verbatim, never
-  // recomputed from prices). Not yet closed → 0. Closed and this update
-  // doesn't touch net_pnl → preserve the value already stored.
+  // Realised P&L is the user-entered net_pnl, stored verbatim. Not closed → 0.
+  // Closed and this update doesn't touch net_pnl → preserve what is stored.
   const resultPnl = !effectiveClosed
     ? 0
     : input.net_pnl !== undefined
-      ? (input.net_pnl ?? metrics.blendedPnl)
+      ? (input.net_pnl ?? 0)
       : execution.blendedPnl.toNumber();
+
+  const exitSnapshot = await resolveExitSnapshot(
+    trade.pair,
+    effectiveClosed,
+    dateClosed,
+    execution,
+    false,
+  );
 
   const data: Prisma.ExecutionUpdateInput = {
     entryPrice: dec(entryPrice),
     lotSize: dec(lotSize),
-    riskPct: input.risk_pct !== undefined ? dec(input.risk_pct) : execution.riskPct,
+    riskPct: dec(riskPct),
     exitType: input.exit_type ?? execution.exitType,
     dateClosed,
     mainExitPrice: effectiveClosed ? decOrNull(mainExitPrice) : null,
@@ -401,6 +638,7 @@ export async function updateExecution(
     totalPips: dec(metrics.totalPips),
     blendedPnl: dec(resultPnl),
     blendedRr: dec(metrics.blendedRr),
+    ...exitSnapshot,
   };
   if (input.account_id !== undefined) data.account = { connect: { id: input.account_id } };
 

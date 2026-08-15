@@ -1,7 +1,21 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Derived trade metrics: total pips, blended P&L and blended R:R are computed
-// server-side from the prices, lot size and the pair's pip value so the journal
-// always shows internally-consistent numbers regardless of client input.
+// Derived trade metrics: total pips and realised R:R, computed server-side from
+// the prices so the journal always shows internally-consistent numbers
+// regardless of client input.
+//
+// P&L IS NOT DERIVED. It is entered by hand and stored verbatim. A price-
+// derived figure ignores spread, swap and commission, so it never matched the
+// broker statement and was not trusted — the calculator that produced it has
+// been removed rather than left in as a fallback that silently fills the field.
+//
+// Removing it also removed R:R's dependence on money: R is
+//   blendedPnl / riskMoney
+//     = (totalPips × pipValue × lotSize) / (riskPips × pipValue × lotSize)
+//     = totalPips / riskPips
+// so pip value and lot size cancel exactly. R is therefore computed from prices
+// alone, needs no pair lookup, and stays comparable across accounts of
+// different sizes — which is what makes it the right unit for edge statistics.
+// Lot size remains stored and shown; it simply no longer feeds this math.
 //
 // Conventions mirror the frontend's getDistanceToEntry pip sizing so "pips" are
 // consistent across the whole app (planned-trade distance badge ↔ journal pips).
@@ -11,44 +25,57 @@ function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
-/** Price-units → pips multiplier. Gold = 1, JPY pairs = 100, everything else = 10000. */
-export function pipMultiplierForSymbol(symbol: string): number {
-  const s = symbol.toUpperCase();
-  if (s.includes('XAU') || s === 'GOLD') return 1;
-  if (s.endsWith('JPY')) return 100;
-  return 10000;
+/**
+ * Price-units → quote-units multiplier.
+ *
+ * Forex pairs are quoted in pips: 0.0001, or 0.01 when the quote side is JPY.
+ * Everything else — indices, metals — is quoted in whole points, so the
+ * multiplier is 1 and a 4500 → 4600 move reads as 100, not 1,000,000.
+ *
+ * Whether a symbol is a forex pair is decided by the caller from the asset
+ * registry (see instrument-scale.ts), not guessed from the symbol here: the
+ * old rule special-cased XAU by name and silently treated every index as a
+ * 4-decimal FX pair, which is what produced SPY totals like −800,000.
+ */
+export function pipMultiplier(symbol: string, isForexPair: boolean): number {
+  if (!isForexPair) return 1;
+  return symbol.toUpperCase().endsWith('JPY') ? 100 : 10000;
 }
 
 export interface TradeMetricsInput {
   direction: 'Buy' | 'Sell';
   symbol: string;
+  /** Forex ⇒ measured in pips. Anything else ⇒ measured in whole points. */
+  isForexPair: boolean;
   entryPrice: number;
   slPrice: number;
   mainExitPrice: number | null;
   partialExitPrice: number | null;
   partialExitLotPct: number | null;
-  lotSize: number;
-  pipValue: number;
 }
 
 export interface TradeMetrics {
   totalPips: number;
-  blendedPnl: number;
   blendedRr: number;
 }
 
 /**
- * Computes pips / P&L / R:R for a closed trade. Returns zeros for a live trade
- * (no main exit yet). Partial exits are blended by lot weighting.
+ * Computes the price distance and realised R for a closed trade. Returns zeros
+ * for a live trade (no main exit yet). Partial exits are blended by lot
+ * weighting. Risk is measured against the idea's stop.
+ *
+ * `totalPips` is pips for forex and whole points for everything else — the unit
+ * the instrument is actually quoted in. R is unaffected either way: the
+ * multiplier appears in both halves of totalPips / riskPips and cancels.
  */
 export function computeTradeMetrics(input: TradeMetricsInput): TradeMetrics {
   if (input.mainExitPrice == null) {
-    return { totalPips: 0, blendedPnl: 0, blendedRr: 0 };
+    return { totalPips: 0, blendedRr: 0 };
   }
 
-  const mult = pipMultiplierForSymbol(input.symbol);
+  const mult = pipMultiplier(input.symbol, input.isForexPair);
   const sign = input.direction === 'Buy' ? 1 : -1;
-  const legPips = (exit: number) => sign * (exit - input.entryPrice) * mult;
+  const legPips = (exit: number): number => sign * (exit - input.entryPrice) * mult;
 
   let totalPips: number;
   if (
@@ -63,17 +90,36 @@ export function computeTradeMetrics(input: TradeMetricsInput): TradeMetrics {
     totalPips = legPips(input.mainExitPrice);
   }
 
-  const blendedPnl = totalPips * input.pipValue * input.lotSize;
-
   const riskPips = Math.abs(input.entryPrice - input.slPrice) * mult;
-  const riskMoney = riskPips * input.pipValue * input.lotSize;
-  const blendedRr = riskMoney > 0 ? blendedPnl / riskMoney : 0;
+  const blendedRr = riskPips > 0 ? totalPips / riskPips : 0;
 
   return {
     totalPips: round2(totalPips),
-    blendedPnl: round2(blendedPnl),
     blendedRr: round2(blendedRr),
   };
+}
+
+/**
+ * Expected R:R for the idea — the reward the plan was aiming at, per unit of
+ * planned risk, signed the same way realised R is.
+ *
+ * Null when the plan cannot express a ratio: no target, or a stop sitting
+ * exactly on entry (zero risk). Never guessed. A target on the wrong side of
+ * entry yields a negative number rather than null — that is a real, and
+ * informative, property of the plan as it was recorded.
+ */
+export function computeExpectedRr(input: {
+  direction: string;
+  entryPrice: number;
+  slPrice: number;
+  targetPrice: number | null;
+}): number | null {
+  if (input.targetPrice == null) return null;
+  const risk = Math.abs(input.entryPrice - input.slPrice);
+  if (risk === 0) return null;
+  const sign = input.direction === 'Buy' ? 1 : -1;
+  const reward = sign * (input.targetPrice - input.entryPrice);
+  return round2(reward / risk);
 }
 
 /**

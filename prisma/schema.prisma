@@ -967,10 +967,33 @@ model Trade {
   conviction       String   @db.VarChar(10) // Low | Medium | High
   dateOpened       DateTime @map("date_opened")
   session          String   @db.VarChar(24)
-  fundamentalScore Int?     @map("fundamental_score") @db.SmallInt
   screenshots      String[]
   psychology       String?  @db.VarChar(120)
   notes            String?
+
+  // The Oracle score for this pair AS OF the entry date, captured once at
+  // write time and never recomputed. Replaces the old `fundamental_score`,
+  // which was a live, undated read taken at whatever moment the form
+  // happened to be open — the same fact, captured badly.
+  //
+  //   oracleScoreAtEntry         the score itself; null when none exists for
+  //                              that date (before scoring began, a gap, a
+  //                              non-trading day). Never carried forward from
+  //                              a nearby date, never fabricated.
+  //   oracleScoreEntryDate       the calendar date (UTC) the score is
+  //                              addressed to. Null for legacy values, which
+  //                              are addressed to no date.
+  //   oracleScoreEntryCapturedAt when the snapshot was taken.
+  //   oracleScoreEntrySource     'snapshot' — read from a real score row for
+  //                              oracleScoreEntryDate.
+  //                              'legacy'   — carried across from the old
+  //                                           fundamental_score at migration.
+  //                              'manual'   — the user typed it.
+  oracleScoreAtEntry         Int?      @map("oracle_score_at_entry") @db.SmallInt
+  oracleScoreEntryDate       DateTime? @map("oracle_score_entry_date") @db.Date
+  oracleScoreEntryCapturedAt DateTime? @map("oracle_score_entry_captured_at")
+  oracleScoreEntrySource     String?   @map("oracle_score_entry_source") @db.VarChar(10)
+
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
@@ -1003,6 +1026,16 @@ model Execution {
   totalPips         Decimal   @default(0) @map("total_pips") @db.Decimal(12, 2)
   blendedPnl        Decimal   @default(0) @map("blended_pnl") @db.Decimal(20, 2)
   blendedRr         Decimal   @default(0) @map("blended_rr") @db.Decimal(12, 2)
+
+  // The Oracle score for the trade's pair AS OF this execution's exit date.
+  // Exit lives here, not on Trade, because dateClosed is per-account: two
+  // accounts can close the same idea on different days and therefore against
+  // different scores. Same snapshot rules as the entry side — captured once,
+  // keyed to the date, null when no score row exists, never recomputed.
+  oracleScoreAtExit         Int?      @map("oracle_score_at_exit") @db.SmallInt
+  oracleScoreExitDate       DateTime? @map("oracle_score_exit_date") @db.Date
+  oracleScoreExitCapturedAt DateTime? @map("oracle_score_exit_captured_at")
+
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 

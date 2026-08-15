@@ -1,4 +1,31 @@
 import { z } from 'zod';
+import {
+  checkExitAfterEntry,
+  checkExitNotFuture,
+  checkExitPricePresent,
+  checkPartialCoherence,
+  checkPlan,
+  checkRiskBand,
+  type FieldProblem,
+} from '../services/trade-validation';
+
+/**
+ * Reports a rule failure on the Zod issue list under the field it belongs to.
+ * `prefix` prepends a path segment when the field sits inside a nested body
+ * (an execution inside a create-trade payload), so the client can anchor the
+ * message to the exact input that produced it.
+ */
+function addProblem(
+  ctx: z.RefinementCtx,
+  problem: FieldProblem,
+  prefix: (string | number)[] = [],
+): void {
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: problem.message,
+    path: [...prefix, problem.field],
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Allowed literal values. These mirror the frontend's string unions exactly so
@@ -98,9 +125,22 @@ export const createExecutionSchema = z
     // it. Null/omitted leaves the execution with no manual P&L override.
     net_pnl: z.number().finite().optional().nullable(),
   })
-  .refine((d) => !d.is_closed || d.main_exit_price != null, {
-    message: 'main_exit_price is required when an execution is closed',
-    path: ['main_exit_price'],
+  .superRefine((d, ctx) => {
+    // Fill-level rules that can be judged from this body alone. The exit-date-
+    // after-entry-date rule needs the parent idea's entry instant and is
+    // enforced in the service (createTrade refines it inline, since a create
+    // payload carries both).
+    //
+    // This schema serves two CREATE paths — a fill inside a new trade, and a
+    // fill added to an existing one — so every rule blocks here regardless of
+    // severity. That is Tier 1: hand entry should be right the first time.
+    const problems: (FieldProblem | null)[] = [
+      checkRiskBand(d.risk_pct),
+      checkExitPricePresent(d.is_closed, d.main_exit_price),
+      checkPartialCoherence(d.partial_exit_price, d.partial_exit_lot_pct),
+      d.date_closed ? checkExitNotFuture(new Date(d.date_closed)) : null,
+    ];
+    for (const p of problems) if (p) addProblem(ctx, p);
   });
 
 export const updateExecutionSchema = z.object({
@@ -117,6 +157,11 @@ export const updateExecutionSchema = z.object({
   exit_type: z.enum(EXIT_TYPES).optional(),
   net_pnl: z.number().finite().optional().nullable(),
 });
+// No rule refinement on the update schema. Every rule that applies to an edit
+// is advisory, and advisory failures must reach the service so it can record
+// them as flags rather than refuse the write — a Zod refinement here would
+// reject the patch before the path was ever considered. Shape and type
+// validation above still apply; correctness rules run in updateExecution.
 
 export const createTradeSchema = z
   .object({
@@ -128,16 +173,46 @@ export const createTradeSchema = z
     planned_first_tp: z.number().finite().optional().nullable(),
     planned_main_tp: z.number().finite(),
     conviction: z.enum(CONVICTIONS),
-    fundamental_score: z.number().int().min(-50).max(50).optional().nullable(),
+    // Manual override of the Oracle score snapshot. Omit it and the server
+    // snapshots the score for this pair on the entry date; send it and the
+    // value is stored verbatim with source='manual'. Range mirrors what the
+    // Oracle can actually produce (it is signed, and not capped at 10).
+    oracle_score_at_entry: z.number().int().min(-50).max(50).optional().nullable(),
     psychology: z.string().trim().max(120).optional().nullable(),
     notes: z.string().trim().max(5000).optional().nullable(),
     screenshots: z.array(z.string()).max(20).optional(),
     date_opened: dateTimeLike.optional(),
     executions: z.array(createExecutionSchema).min(1, 'At least one account execution is required'),
   })
-  .refine((d) => d.executions.filter((e) => e.is_primary).length <= 1, {
-    message: 'At most one execution may be marked primary',
-    path: ['executions'],
+  .superRefine((d, ctx) => {
+    if (d.executions.filter((e) => e.is_primary).length > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "At most one execution may be marked primary — it decides the idea's outcome for every edge statistic.",
+        path: ['executions'],
+      });
+    }
+
+    const dateOpened = d.date_opened ? new Date(d.date_opened) : new Date();
+    for (const p of checkPlan({
+      direction: d.direction,
+      plannedEntry: d.planned_entry,
+      plannedSl: d.planned_sl,
+      plannedFirstTp: d.planned_first_tp ?? null,
+      plannedMainTp: d.planned_main_tp,
+      dateOpened,
+    })) {
+      addProblem(ctx, p);
+    }
+
+    // A create payload carries the idea and its fills together, so the
+    // cross-object exit-ordering rule can be anchored to the exact row.
+    d.executions.forEach((e, i) => {
+      if (!e.date_closed) return;
+      const problem = checkExitAfterEntry(dateOpened, new Date(e.date_closed));
+      if (problem) addProblem(ctx, problem, ['executions', i]);
+    });
   });
 
 export const updateTradeSchema = z.object({
@@ -149,10 +224,11 @@ export const updateTradeSchema = z.object({
   planned_first_tp: z.number().finite().optional().nullable(),
   planned_main_tp: z.number().finite().optional(),
   conviction: z.enum(CONVICTIONS).optional(),
-  // Must match createTradeSchema's range (−50…50). The Oracle/Lucid score can be
-  // negative or >10, so the old min(1).max(10) bound rejected edits of any trade
-  // whose stored score fell outside 1–10 — the intermittent trade-edit failure.
-  fundamental_score: z.number().int().min(-50).max(50).optional().nullable(),
+  // Manual override of the Oracle score snapshot. Range mirrors what the Oracle
+  // can actually produce (signed, not capped at 10) — the old min(1).max(10)
+  // bound rejected edits of any trade whose stored score fell outside 1–10,
+  // which was the intermittent trade-edit failure.
+  oracle_score_at_entry: z.number().int().min(-50).max(50).optional().nullable(),
   psychology: z.string().trim().max(120).optional().nullable(),
   notes: z.string().trim().max(5000).optional().nullable(),
   screenshots: z.array(z.string()).max(20).optional(),

@@ -1,4 +1,6 @@
 import type { Prisma, CashFlow, Execution, PlannedTrade, Trade, TradingModel, TradingPair } from '@prisma/client';
+import { computeExpectedRr } from './trade-metrics';
+import { checkTradeIntegrity, type ProblemSeverity } from './trade-validation';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Serializers: Prisma rows → the exact snake_case shapes the frontend already
@@ -116,9 +118,18 @@ export interface ExecutionDto {
   main_exit_price: number;
   total_pips: number;
   blended_pnl: number;
+  // Realised R for this fill: pips achieved / pips risked, measured against the
+  // idea's stop. Lot size and pip value cancel out of that ratio, so it is
+  // comparable across accounts of different sizes. 0 while the fill is open.
   blended_rr: number;
   exit_type: string;
   date_closed: string;
+  // The Oracle score for the trade's pair on THIS fill's exit date, frozen when
+  // the fill was closed. Null when no score exists for that date — never a
+  // nearby date's score, never a live read.
+  oracle_score_at_exit: number | null;
+  oracle_score_exit_date: string | null;
+  oracle_score_exit_captured_at: string | null;
 }
 
 export function toExecutionDto(e: Execution): ExecutionDto {
@@ -138,6 +149,11 @@ export function toExecutionDto(e: Execution): ExecutionDto {
     blended_rr: num(e.blendedRr) ?? 0,
     exit_type: e.exitType,
     date_closed: e.dateClosed ? e.dateClosed.toISOString() : '',
+    oracle_score_at_exit: e.oracleScoreAtExit,
+    oracle_score_exit_date: e.oracleScoreExitDate ? ymd(e.oracleScoreExitDate) : null,
+    oracle_score_exit_captured_at: e.oracleScoreExitCapturedAt
+      ? e.oracleScoreExitCapturedAt.toISOString()
+      : null,
   };
 }
 
@@ -160,7 +176,25 @@ export interface TradeDto {
   conviction: string;
   date_opened: string;
   session: string;
-  fundamental_score: number | null;
+  // The Oracle score for this pair on the ENTRY date, frozen at write time.
+  // `source` distinguishes a real dated snapshot from a value carried across
+  // from the pre-snapshot era ('legacy') or typed by the user ('manual'), so a
+  // reader never has to guess how much weight the number carries.
+  oracle_score_at_entry: number | null;
+  oracle_score_entry_date: string | null;
+  oracle_score_entry_captured_at: string | null;
+  oracle_score_entry_source: 'snapshot' | 'legacy' | 'manual' | null;
+  // R the plan was aiming at: planned reward / planned risk. Derived here, on
+  // every read, from the three planned prices — never stored, so it cannot go
+  // stale against them. Null when the plan has no target or no risk.
+  expected_rr: number | null;
+  // Whether this trade is internally consistent, recomputed on every read from
+  // the stored row. THE one implementation — no surface re-derives it, and
+  // nothing about it is stored, so there is no state to drift and a corrected
+  // trade clears itself with no explicit action. A trade with ok:false stays
+  // fully visible in the journal but leaves every edge statistic, numerator
+  // and denominator both.
+  integrity: TradeIntegrityDto;
   screenshots: string[];
   psychology: string;
   notes: string;
@@ -171,7 +205,70 @@ export interface TradeDto {
 
 export type TradeWithExecutions = Trade & { executions: Execution[] };
 
-export function toTradeDto(t: TradeWithExecutions): TradeDto {
+/**
+ * A single integrity failure as the API reports it: which field, what is wrong,
+ * how badly, and which fill it belongs to.
+ */
+export interface IntegrityProblemDto {
+  field: string;
+  message: string;
+  severity: ProblemSeverity;
+  /** The execution this failure belongs to, or null when it is idea-level. */
+  execution_id: string | null;
+}
+
+export interface TradeIntegrityDto {
+  /** False ⇒ this trade needs attention and leaves every edge statistic. */
+  ok: boolean;
+  problems: IntegrityProblemDto[];
+}
+
+/**
+ * Runs the integrity check over a stored trade and shapes it for the wire.
+ *
+ * `executions` is the trade's FULL fill set, which is not always the same as
+ * the fills being serialized: the account-scoped list narrows `executions` to
+ * one account. Integrity is a property of the idea as stored, so it must be
+ * judged on every fill — otherwise the same trade would read flagged in the
+ * all-accounts view and clean when filtered to an account whose own fill is
+ * fine, and the statistics would disagree with each other by view.
+ */
+function toIntegrityDto(t: TradeWithExecutions, executions: Execution[]): TradeIntegrityDto {
+  const result = checkTradeIntegrity(
+    {
+      direction: t.direction,
+      plannedEntry: num(t.plannedEntry) ?? 0,
+      plannedSl: num(t.plannedSl) ?? 0,
+      plannedFirstTp: num(t.plannedFirstTp),
+      plannedMainTp: num(t.plannedMainTp) ?? 0,
+      dateOpened: t.dateOpened,
+    },
+    executions.map((e) => ({
+      id: e.id,
+      riskPct: num(e.riskPct) ?? 0,
+      mainExitPrice: num(e.mainExitPrice),
+      partialExitPrice: num(e.partialExitPrice),
+      partialExitLotPct: num(e.partialExitLotPct),
+      dateClosed: e.dateClosed,
+    })),
+  );
+  return {
+    ok: result.ok,
+    problems: result.problems.map((p) => ({
+      field: p.field,
+      message: p.message,
+      severity: p.severity,
+      execution_id: p.executionId,
+    })),
+  };
+}
+
+export function toTradeDto(
+  t: TradeWithExecutions,
+  /** The trade's full fill set when `t.executions` has been narrowed to one
+   * account. Defaults to what is on the trade. */
+  allExecutions: Execution[] = t.executions,
+): TradeDto {
   return {
     id: t.id,
     model: t.model,
@@ -184,7 +281,19 @@ export function toTradeDto(t: TradeWithExecutions): TradeDto {
     conviction: t.conviction,
     date_opened: t.dateOpened.toISOString(),
     session: t.session,
-    fundamental_score: t.fundamentalScore,
+    oracle_score_at_entry: t.oracleScoreAtEntry,
+    oracle_score_entry_date: t.oracleScoreEntryDate ? ymd(t.oracleScoreEntryDate) : null,
+    oracle_score_entry_captured_at: t.oracleScoreEntryCapturedAt
+      ? t.oracleScoreEntryCapturedAt.toISOString()
+      : null,
+    oracle_score_entry_source: t.oracleScoreEntrySource as TradeDto['oracle_score_entry_source'],
+    expected_rr: computeExpectedRr({
+      direction: t.direction,
+      entryPrice: num(t.plannedEntry) ?? 0,
+      slPrice: num(t.plannedSl) ?? 0,
+      targetPrice: num(t.plannedMainTp),
+    }),
+    integrity: toIntegrityDto(t, allExecutions),
     screenshots: t.screenshots,
     psychology: t.psychology ?? '',
     notes: t.notes ?? '',
