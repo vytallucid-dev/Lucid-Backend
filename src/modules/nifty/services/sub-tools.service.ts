@@ -42,7 +42,7 @@ export async function getVelocity(
   let endScorecard: { observationDate: Date; netScore: number } | null = null;
   if (params.endDate) {
     endScorecard = await prisma.niftyScorecard.findFirst({
-      where: { observationDate: params.endDate, isCurrent: true },
+      where: { observationDate: params.endDate, isCurrent: true, isNonTradingDay: false },
       select: { observationDate: true, netScore: true },
     });
     if (!endScorecard) {
@@ -54,7 +54,7 @@ export async function getVelocity(
     }
   } else {
     endScorecard = await prisma.niftyScorecard.findFirst({
-      where: { isCurrent: true },
+      where: { isCurrent: true, isNonTradingDay: false },
       orderBy: { observationDate: 'desc' },
       select: { observationDate: true, netScore: true },
     });
@@ -87,6 +87,7 @@ export async function getVelocity(
     where: {
       observationDate: { lt: endScorecard.observationDate },
       isCurrent: true,
+      isNonTradingDay: false,
     },
     orderBy: { observationDate: 'desc' },
     take: HISTORY_DEPTH_FOR_ANCHORS,
@@ -108,7 +109,7 @@ export async function getVelocity(
   let startRow: ScorecardHistoryRow | null = null;
   if (params.startDate) {
     const startSc = await prisma.niftyScorecard.findFirst({
-      where: { observationDate: params.startDate, isCurrent: true },
+      where: { observationDate: params.startDate, isCurrent: true, isNonTradingDay: false },
       select: { observationDate: true, netScore: true },
     });
     if (!startSc) {
@@ -130,7 +131,7 @@ export async function getVelocity(
     startRow = found ?? null;
   }
 
-  const velocityResult = computeVelocity(startRow, currentRow, history);
+  const velocityResult = await computeVelocity(startRow, currentRow, history);
 
   let trajectory: Array<{ date: string; net: number }> = [];
   if (startRow) {
@@ -141,6 +142,7 @@ export async function getVelocity(
           lte: endScorecard.observationDate,
         },
         isCurrent: true,
+        isNonTradingDay: false,
       },
       orderBy: { observationDate: 'asc' },
       select: { observationDate: true, netScore: true },
@@ -174,7 +176,7 @@ export async function getVBottomCheck(
 
   if (params.date) {
     scorecard = await prisma.niftyScorecard.findFirst({
-      where: { observationDate: params.date, isCurrent: true },
+      where: { observationDate: params.date, isCurrent: true, isNonTradingDay: false },
       select: { observationDate: true, ind9RawComposite: true },
     });
     if (!scorecard) {
@@ -186,7 +188,7 @@ export async function getVBottomCheck(
     }
   } else {
     scorecard = await prisma.niftyScorecard.findFirst({
-      where: { isCurrent: true },
+      where: { isCurrent: true, isNonTradingDay: false },
       orderBy: { observationDate: 'desc' },
       select: { observationDate: true, ind9RawComposite: true },
     });

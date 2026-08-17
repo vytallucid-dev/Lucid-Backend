@@ -2,6 +2,7 @@ import { logger } from '@core/utils/logger';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import { assembleScorecard } from '@modules/nifty/services/scorecard-assembly.service';
 import { isJobRunning } from './job-guard';
+import { isTradingDay } from '@core/utils/trading-calendar';
 
 const JOB_NAME = 'assemble_scorecard';
 const CONCURRENT_GUARD_MINUTES = 5;
@@ -19,6 +20,17 @@ export async function runScorecardAssemblyCron(): Promise<void> {
   const observationDate = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
   );
+
+  // Non-trading days (weekend or NSE holiday, per nse_holidays) never get a
+  // scorecard — added 2026-08-17. This covers both the cron trigger and the
+  // admin "re-run assemble_scorecard" path, which calls this same function.
+  if (!(await isTradingDay(observationDate))) {
+    logger.info(
+      { jobName: JOB_NAME, observationDate: observationDate.toISOString().slice(0, 10) },
+      'Skipping scorecard assembly — not an NSE trading day',
+    );
+    return;
+  }
 
   const log = await dataFetchLogRepository.start({
     jobName: JOB_NAME,

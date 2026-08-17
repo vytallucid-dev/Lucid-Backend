@@ -53,6 +53,7 @@ export interface NiftyScorecard {
   net_score: number;
   band: NiftyBand;
   ind9_raw_composite: number | null;
+  ind13_score: number | null;
   ind9_sub_indicators: Record<string, NiftyIndicatorScore>;
   composition_flag: NiftyCompositionFlag;
   peak_score_active: boolean;
@@ -76,6 +77,7 @@ export interface NiftyScorecardHistoryItem {
   composition_flag: NiftyCompositionFlag;
   peak_score_active: boolean;
   ind9_raw_composite: number | null;
+  ind13_score: number | null;
 }
 
 export interface NiftyPattern {

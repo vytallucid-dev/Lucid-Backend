@@ -77,6 +77,7 @@ function toNiftyScorecardFull(pub: PublicScorecard): NiftyScorecard {
     net_score: pub.net_score,
     band: toNiftyBand(pub.band),
     ind9_raw_composite: pub.ind9_raw_composite ?? null,
+    ind13_score: pub.ind13_score ?? null,
     ind9_sub_indicators: buildInd9SubIndicators(pub.ind9_sub_indicators),
     composition_flag: toNiftyCompositionFlag(pub.composition_flag),
     peak_score_active: pub.peak_score_active,
@@ -116,6 +117,7 @@ function toNiftyScorecardHistoryItem(
     composition_flag: toNiftyCompositionFlag(pub.composition_flag),
     peak_score_active: pub.peak_score_active,
     ind9_raw_composite: pub.ind9_raw_composite ?? null,
+    ind13_score: pub.ind13_score ?? null,
   };
 }
 

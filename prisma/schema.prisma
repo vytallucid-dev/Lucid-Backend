@@ -513,6 +513,10 @@ model NiftyScorecard {
   ratingLabel           String   @map("rating_label") @db.VarChar(30)
   specialFlags          Json?    @map("special_flags")
   ind9RawComposite      Int?     @map("ind_9_raw_composite") @db.SmallInt
+  // IND_NIFTY_13_FII_LS_RATIO's score for this date. Persisted standalone since
+  // 2026-08-17 — Ind 13 is deliberately excluded from domestic/external/net
+  // (see scorecard-assembly.service.ts). Still computed and returned by the API.
+  ind13Score            Int?     @map("ind_13_score") @db.SmallInt
   compositionFlag       String?  @map("composition_flag") @db.VarChar(40)
   conflictFlag          Boolean  @default(false) @map("conflict_flag")
   peakScoreCeilingState Json?    @map("peak_score_ceiling_state")
@@ -523,6 +527,12 @@ model NiftyScorecard {
   indicatorBreakdown    Json     @map("indicator_breakdown")
   computedAt            DateTime @default(now()) @map("computed_at")
   isStale               Boolean  @default(false) @map("is_stale")
+  // True when observationDate is not an NSE trading day (weekend or holiday,
+  // per NseHoliday) — added 2026-08-17. Existing offenders were backfilled;
+  // generation is gated against creating new ones (see scorecard-assembly
+  // trigger paths). Never deleted, only marked — excluded from velocity,
+  // anchor selection, band distribution, and historical series reads.
+  isNonTradingDay       Boolean  @default(false) @map("is_non_trading_day")
 
   ratingRule ScorecardRatingRule @relation(fields: [ratingRuleId], references: [id])
 
@@ -532,6 +542,26 @@ model NiftyScorecard {
   // Hot path: latest current scorecard (getLatestScorecard / velocity / v-bottom).
   @@index([isCurrent, observationDate(sort: Desc)], map: "nifty_scorecards_current_date_idx")
   @@map("nifty_scorecards")
+}
+
+// NSE holiday reference — combined with a plain weekend (Sat/Sun) check to
+// determine trading days. See src/core/utils/trading-calendar.ts. Populated
+// 2026-08-17 for 2022-06-15 (earliest data_points row across all NIFTY
+// indicators) through 2026-12-25; 2027 is a known, reported gap — NSE had not
+// published its 2027 holiday circular as of this table's creation. Source:
+// calendarlabs.com's NSE market holiday pages (a third-party aggregator, not
+// NSE's own circular directly — direct fetches of nseindia.com and
+// archives.nseindia.com both failed during this work; see chat report).
+//
+// NOTE: this table is intentionally NOT the sole enforcement mechanism for
+// the partial unique index added on data_points in the same phase — it only
+// backs the NIFTY scorecard trading-day gate and velocity's session count.
+model NseHoliday {
+  date      DateTime @id @db.Date
+  name      String   @db.VarChar(120)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("nse_holidays")
 }
 
 model EdgefinderScorecard {

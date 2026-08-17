@@ -1,4 +1,5 @@
 import { AutoAnchors, ScorecardHistoryRow, VelocityLabel, VelocityResult } from './types';
+import { countTradingDaysBetween } from '@core/utils/trading-calendar';
 
 const AUTO_ANCHOR_LOOKBACK_SESSIONS = 120;
 
@@ -7,22 +8,17 @@ function toIsoDate(d: Date): string {
 }
 
 /**
- * Trading-day delta: count of scorecard observation dates between start and end
- * (exclusive of start, inclusive of end). Each scorecard counts as one session
- * for velocity purposes.
+ * Sessions = NSE trading days strictly after startDate, up to and including
+ * endDate, per the nse_holidays calendar (src/core/utils/trading-calendar.ts).
+ *
+ * Changed 2026-08-17 — this previously counted entries in the `history`
+ * array (i.e. scorecard rows that happened to exist), which double-counted
+ * weekends before scorecard generation was gated to trading days only (see
+ * B2 of the same phase). A stale `history` array is no longer even needed
+ * here; kept as an unused param removed entirely rather than left dangling.
  */
-function sessionsBetween(
-  history: ScorecardHistoryRow[],
-  startDate: Date,
-  endDate: Date,
-): number {
-  let count = 0;
-  for (const row of history) {
-    if (row.observationDate > startDate && row.observationDate <= endDate) {
-      count++;
-    }
-  }
-  return count;
+async function sessionsBetween(startDate: Date, endDate: Date): Promise<number> {
+  return countTradingDaysBetween(startDate, endDate);
 }
 
 export function classifyVelocity(velocity: number): VelocityLabel {
@@ -93,13 +89,17 @@ export function computeAutoAnchors(
  *
  * @param startScorecard the start anchor row (or null if not found)
  * @param endScorecard the end anchor row (typically today's scorecard)
- * @param history full scorecard history (used to count sessions between)
+ * @param history full scorecard history — no longer used for the session
+ *   count (see sessionsBetween), kept in the signature because
+ *   computeAutoAnchors's caller passes the same `history` around and callers
+ *   still call both together; retained for call-site stability.
  */
-export function computeVelocity(
+export async function computeVelocity(
   startScorecard: ScorecardHistoryRow | null,
   endScorecard: ScorecardHistoryRow,
   history: ScorecardHistoryRow[],
-): VelocityResult {
+): Promise<VelocityResult> {
+  void history;
   if (!startScorecard) {
     return {
       velocity: null,
@@ -113,8 +113,7 @@ export function computeVelocity(
     };
   }
 
-  const sessions = sessionsBetween(
-    history.concat([endScorecard]),
+  const sessions = await sessionsBetween(
     startScorecard.observationDate,
     endScorecard.observationDate,
   );

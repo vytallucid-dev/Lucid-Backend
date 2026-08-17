@@ -152,8 +152,22 @@ export function formatScoreBasis(
   const rollingAvg = typeof metadata.rollingAvg === 'number' ? metadata.rollingAvg : null;
   const pctChange = typeof metadata.pctChange === 'number' ? metadata.pctChange : null;
   const lookbackDays = typeof metadata.lookbackDays === 'number' ? metadata.lookbackDays : null;
+  const percentile = typeof metadata.percentile === 'number' ? metadata.percentile : null;
+  const observationCount =
+    typeof metadata.observationCount === 'number' ? metadata.observationCount : null;
 
   switch (indicatorCode) {
+    case 'IND_NIFTY_13_FII_LS_RATIO': {
+      // Expanding-window percentile rank of long_pct — set whenever the
+      // percentile-rank handler could compute one, including on
+      // insufficient-history dates (score forced to 0, percentile still shown
+      // for transparency on progress toward the 60-observation floor).
+      if (percentile === null || observationCount === null) return null;
+      return {
+        label: `Percentile (${observationCount} obs)`,
+        value: `${percentile.toFixed(1)}th`,
+      };
+    }
     case 'IND_NIFTY_06_FII_FLOW':
       // 10-day rolling average of daily FII cash flow (₹ Cr).
       if (rollingAvg === null) return null;
@@ -170,7 +184,30 @@ export function formatScoreBasis(
     case 'IND_NIFTY_10_DXY':
     case 'IND_NIFTY_11_BRENT':
     case 'IND_NIFTY_12_USDINR': {
-      // Rolling % change over the lookback window — the value that is scored.
+      const sigma = typeof metadata.sigma === 'number' ? metadata.sigma : null;
+      const measure = typeof metadata.measure === 'number' ? metadata.measure : null;
+      const measureInSigma =
+        typeof metadata.measureInSigma === 'number' ? metadata.measureInSigma : null;
+      const sigmaObservationCount =
+        typeof metadata.sigmaObservationCount === 'number' ? metadata.sigmaObservationCount : null;
+
+      // rolling_slope_sigma (v3, live 2026-08-17 forward): sigma-units value
+      // leads — it's what the tier is actually set by, the raw % is
+      // secondary context. Both surfaced; sigma itself and the observation
+      // count it was derived from are in Score.computationMetadata in full
+      // (measure, sigma, measureInSigma, sigmaObservationCount all persisted).
+      if (sigma !== null && measure !== null && measureInSigma !== null) {
+        const sign = measureInSigma > 0 ? '+' : '';
+        const measureSign = measure > 0 ? '+' : '';
+        return {
+          label: `10-day slope (n=${sigmaObservationCount ?? '?'})`,
+          value: `${sign}${measureInSigma.toFixed(2)}σ (${measureSign}${measure.toFixed(2)}%)`,
+        };
+      }
+
+      // Historical dates scored under the pre-2026-08-17 v2 endpoint-delta
+      // rule are never rescored by this change — fall back to their original
+      // metadata shape so old scorecards still render a score basis.
       if (pctChange === null) return null;
       const sign = pctChange > 0 ? '+' : '';
       return { label: `${lookbackDays ?? 10}-day change`, value: `${sign}${pctChange.toFixed(2)}%` };

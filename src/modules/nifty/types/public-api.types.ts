@@ -66,6 +66,10 @@ export interface PublicScorecard {
   net_score: number;
   band: PublicBand;
   ind9_raw_composite: number | null;
+  // IND_NIFTY_13_FII_LS_RATIO's score, persisted standalone. NOT part of
+  // domestic_composite / external_composite / net_score (excluded 2026-08-17
+  // pending validation) — still computed and shown, just not summed anywhere.
+  ind13_score: number | null;
   ind9_sub_indicators: Record<string, PublicIndicatorScore>; // empty object until EdgeFinder
   composition_flag: PublicCompositionFlag;
   peak_score_active: boolean;
@@ -90,6 +94,7 @@ export interface PublicScorecardHistoryItem {
   composition_flag: PublicCompositionFlag;
   peak_score_active: boolean;
   ind9_raw_composite: number | null;
+  ind13_score: number | null;
 }
 
 export interface PublicIndicatorMetadata {

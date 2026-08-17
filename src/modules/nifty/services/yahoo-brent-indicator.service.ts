@@ -166,6 +166,13 @@ export async function fetchYahooBrentIndicator(
       );
     }
 
+    // Wire the frozen-feed signal into the row itself, not just the fetch
+    // log — added 2026-08-17. Previously detectFrozenFeed's result only
+    // downgraded this run's data_fetch_log status; the DataPoint it wrote
+    // carried no marker at all, which is exactly how the 2026-06 89.18
+    // stretch (a different, now-retired source) went unflagged. Flag only —
+    // the value, observationDate, and isCurrent below are unconditional and
+    // unchanged by `isFrozen`; the write always happens either way.
     const result = await dataPointsRepository.upsert({
       indicatorId: indicator.id,
       observationDate,
@@ -179,6 +186,7 @@ export async function fetchYahooBrentIndicator(
         instrument: 'brent_futures',
       },
       fetchedVia: log.id,
+      ...(isFrozen ? { dataQualityFlag: 'suspect' } : {}),
     });
 
     const rowsInserted = result.action === 'inserted' ? 1 : 0;

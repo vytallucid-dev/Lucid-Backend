@@ -5,6 +5,7 @@ import { AppError } from '@core/middleware/error-handler';
 import { nseClient } from '@core/clients/nse/nse.client';
 import { NseFiiDiiResponse, NseFiiDiiRow } from '@core/clients/nse/types';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
+import { isUniqueViolation } from '@core/repositories/data-points.repository';
 
 const FII_FLOW_INDICATOR_CODE = 'IND_NIFTY_06_FII_FLOW';
 const DII_ABSORPTION_INDICATOR_CODE = 'IND_NIFTY_07_DII_ABSORPTION';
@@ -171,6 +172,16 @@ async function loadIndicators(): Promise<{
  *   Ind 6  (FII net flow)      — every day, source nse_scrape
  *   Ind 7  (DII absorption)    — every day, source derived (0 on FII-buyer days)
  *   Ind 14 (DII net flow)      — every day, source nse_scrape (display-only)
+ *
+ * Explicitly idempotent under concurrent re-runs, as of 2026-08-17 — same
+ * reasoning as dataPointsRepository.upsert's retry wrapper: this reads all
+ * three "existing" rows then writes, inside one transaction, but Read
+ * Committed isolation doesn't serialize that against a second overlapping
+ * transaction. Now that data_points_current_unique exists, a losing
+ * concurrent run gets a unique-violation on whichever of the three
+ * indicators the other transaction reached first; retried once as a whole
+ * batch (all-or-nothing, matching this function's existing atomicity
+ * contract) rather than per-indicator.
  */
 async function persistFiiDii(
   fiiInd: Indicator,
@@ -192,7 +203,28 @@ async function persistFiiDii(
   dii: FiiDiiUpsertResult;
   diiFlow: FiiDiiUpsertResult;
 }> {
-  return prisma.$transaction(async (tx) => {
+  const MAX_ATTEMPTS = 2;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await attemptPersistFiiDii();
+    } catch (err) {
+      lastError = err;
+      if (!isUniqueViolation(err) || attempt === MAX_ATTEMPTS) throw err;
+      logger.warn(
+        { observationDate, attempt },
+        'data_points_current_unique conflict in FII/DII batch — concurrent writer won the race, retrying',
+      );
+    }
+  }
+  throw lastError;
+
+  function attemptPersistFiiDii(): Promise<{
+    fii: FiiDiiUpsertResult;
+    dii: FiiDiiUpsertResult;
+    diiFlow: FiiDiiUpsertResult;
+  }> {
+    return prisma.$transaction(async (tx) => {
     const handle = async (
       indicatorId: string,
       indicatorCode: string,
@@ -279,8 +311,9 @@ async function persistFiiDii(
       rawDate: diiRow.date,
     });
 
-    return { fii: fiiResult, dii: diiResult, diiFlow: diiFlowResult };
-  });
+      return { fii: fiiResult, dii: diiResult, diiFlow: diiFlowResult };
+    });
+  }
 }
 
 /**

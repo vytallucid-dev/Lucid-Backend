@@ -1,7 +1,5 @@
-import { prisma } from '@core/db/prisma';
-import { logger } from '@core/utils/logger';
 import { ScoringContext, ScoringResult, Score } from '../types';
-import { getSkipDates } from '../helpers/frozen-date-crosscheck';
+import { selectRollingWindow } from '../helpers/rolling-window';
 
 interface Tier {
   min: number | null;
@@ -28,39 +26,20 @@ export async function rollingPctDirectionHandler(
 
   const needed = rule.lookback_trading_days + 1;
 
-  const { skipDates, warnings } = await getSkipDates({
+  const window = await selectRollingWindow({
     indicatorCode: ctx.indicatorCode,
     indicatorId: ctx.indicatorId,
     observationDate: ctx.observationDate,
-    lookbackRows: needed,
+    windowSize: needed,
   });
 
-  for (const warning of warnings) {
-    logger.warn(warning, 'Suspected frozen feed breakage detected during rolling window scan');
-  }
-
-  const supersetTake = skipDates.size > 0 ? Math.max(needed + skipDates.size, needed * 3, 40) : needed;
-
-  const superset = await prisma.dataPoint.findMany({
-    where: {
-      indicatorId: ctx.indicatorId,
-      isCurrent: true,
-      observationDate: { lte: ctx.observationDate },
-    },
-    orderBy: { observationDate: 'desc' },
-    take: supersetTake,
-  });
-
-  const points = superset
-    .filter((p) => !skipDates.has(p.observationDate.toISOString().slice(0, 10)))
-    .slice(0, needed);
-
-  if (points.length < needed) {
+  if (!window.ok) {
     return {
       kind: 'insufficient_data',
-      reason: `Need ${needed} points for ${rule.lookback_trading_days}-day pct change; have ${points.length}`,
+      reason: `Need ${needed} points for ${rule.lookback_trading_days}-day pct change; have ${window.have}`,
     };
   }
+  const points = window.points;
 
   const newest = Number(points[0].value);
   const oldest = Number(points[points.length - 1].value);

@@ -12,6 +12,8 @@ import { manualRawCompositeHandler } from './handlers/manual-raw-composite.handl
 import { rollingPctDirectionHandler } from './handlers/rolling-pct-direction.handler';
 import { rollingPctTieredHandler } from './handlers/rolling-pct-tiered.handler';
 import { thresholdBandsHandler } from './handlers/threshold-bands.handler';
+import { percentileRankHandler } from './handlers/percentile-rank.handler';
+import { rollingSlopeSigmaHandler } from './handlers/rolling-slope-sigma.handler';
 import { normalHandler } from './handlers/normal.handler';
 import { invertedHandler } from './handlers/inverted.handler';
 import { cpiRateCycleHandler } from './handlers/cpi-rate-cycle.handler';
@@ -32,6 +34,8 @@ const HANDLERS_BY_TYPE: Record<string, Handler> = {
   rolling_pct_direction: rollingPctDirectionHandler,
   rolling_pct_tiered: rollingPctTieredHandler,
   threshold_bands: thresholdBandsHandler,
+  percentile_rank: percentileRankHandler,
+  rolling_slope_sigma: rollingSlopeSigmaHandler,
   normal: normalHandler,
   inverted: invertedHandler,
   cpi_rate_cycle: cpiRateCycleHandler,

@@ -295,6 +295,7 @@ async function mapScorecardToPublic(
     ratingLabel: string;
     conflictFlag: boolean;
     ind9RawComposite: number | null;
+    ind13Score: number | null;
     compositionFlag: string | null;
     indicatorBreakdown: Prisma.JsonValue;
     specialFlags: Prisma.JsonValue;
@@ -333,6 +334,7 @@ async function mapScorecardToPublic(
     net_score: scorecard.netScore,
     band,
     ind9_raw_composite: scorecard.ind9RawComposite,
+    ind13_score: scorecard.ind13Score,
     ind9_sub_indicators: {}, // Populated when EdgeFinder lands
     composition_flag: scorecard.compositionFlag as PublicCompositionFlag,
     peak_score_active: peakScoreActive,
@@ -347,7 +349,7 @@ async function mapScorecardToPublic(
 
 export async function getLatestScorecard(): Promise<PublicScorecard> {
   const scorecard = await prisma.niftyScorecard.findFirst({
-    where: { isCurrent: true },
+    where: { isCurrent: true, isNonTradingDay: false },
     orderBy: { observationDate: 'desc' },
   });
 
@@ -366,7 +368,7 @@ export async function getScorecardByDate(
   observationDate: Date,
 ): Promise<PublicScorecard> {
   const scorecard = await prisma.niftyScorecard.findFirst({
-    where: { observationDate, isCurrent: true },
+    where: { observationDate, isCurrent: true, isNonTradingDay: false },
     orderBy: { vintageDate: 'desc' },
   });
 
@@ -399,6 +401,7 @@ export async function getScorecardHistory(
 
   const where: Prisma.NiftyScorecardWhereInput = {
     isCurrent: true,
+    isNonTradingDay: false,
     ...(params.from || params.to
       ? {
           observationDate: {
@@ -440,6 +443,7 @@ export async function getScorecardHistory(
       composition_flag: sc.compositionFlag as PublicCompositionFlag,
       peak_score_active: peakState?.status === 'active',
       ind9_raw_composite: sc.ind9RawComposite,
+      ind13_score: sc.ind13Score,
     };
   });
 

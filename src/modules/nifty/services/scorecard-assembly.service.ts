@@ -86,6 +86,7 @@ export interface AssembleScorecardResult {
   ratingLabel: string;
   conflictFlag: boolean;
   ind9RawComposite: number | null;
+  ind13Score: number | null;
   positiveCount: number;
   negativeCount: number;
   neutralCount: number;
@@ -236,6 +237,7 @@ interface ScorecardPersistPayload {
   ratingLabel: string;
   conflictFlag: boolean;
   ind9RawComposite: number | null;
+  ind13Score: number | null;
   positiveCount: number;
   negativeCount: number;
   neutralCount: number;
@@ -289,6 +291,7 @@ async function persistScorecard(
       existing.band === payload.band &&
       existing.conflictFlag === payload.conflictFlag &&
       existing.ind9RawComposite === payload.ind9RawComposite &&
+      existing.ind13Score === payload.ind13Score &&
       velocityIdentical &&
       peakStateIdentical &&
       compositionIdentical &&
@@ -316,6 +319,7 @@ async function persistScorecard(
           band: payload.band,
           conflictFlag: payload.conflictFlag,
           ind9RawComposite: payload.ind9RawComposite,
+          ind13Score: payload.ind13Score,
           positiveCount: payload.positiveCount,
           negativeCount: payload.negativeCount,
           neutralCount: payload.neutralCount,
@@ -345,6 +349,7 @@ async function persistScorecard(
       band: payload.band,
       conflictFlag: payload.conflictFlag,
       ind9RawComposite: payload.ind9RawComposite,
+      ind13Score: payload.ind13Score,
       positiveCount: payload.positiveCount,
       negativeCount: payload.negativeCount,
       neutralCount: payload.neutralCount,
@@ -379,11 +384,16 @@ export async function assembleScorecard(
   const domestic = sumScoresByCodes(breakdown, DOMESTIC_INDICATORS);
   const external = sumScoresByCodes(breakdown, EXTERNAL_INDICATORS);
   const ind13Entry = breakdown[IND_13_CODE];
-  const ind13Score =
-    ind13Entry && ind13Entry.score !== null ? ind13Entry.score : 0;
+  const ind13Score: number | null =
+    ind13Entry && ind13Entry.score !== null ? ind13Entry.score : null;
   const ind13Missing = !ind13Entry || ind13Entry.score === null;
 
-  const netScore = domestic.sum + external.sum + ind13Score;
+  // IND_NIFTY_13_FII_LS_RATIO (FII Long/Short Futures) is deliberately excluded
+  // from net_score pending validation of its new percentile-rank scoring —
+  // 2026-08-17. It is still computed, persisted (ind13Score, below), and
+  // returned by the API; it just no longer contributes to Domestic, External,
+  // or Net. See migration 20260817120000_nifty_scorecard_ind13_field_and_net_backfill.
+  const netScore = domestic.sum + external.sum;
 
   const missingSet = new Set<string>([
     ...domestic.missing,
@@ -414,6 +424,7 @@ export async function assembleScorecard(
     where: {
       observationDate: { lt: observationDate },
       isCurrent: true,
+      isNonTradingDay: false,
     },
     orderBy: { observationDate: 'desc' },
     take: SUB_TOOLS_HISTORY_DEPTH,
@@ -443,7 +454,7 @@ export async function assembleScorecard(
         (r) => r.observationDate.toISOString().slice(0, 10) === anchors.defaultStartDate,
       ) ?? null
     : null;
-  const velocityResult = computeVelocity(defaultStartRow, currentRow, history);
+  const velocityResult = await computeVelocity(defaultStartRow, currentRow, history);
   const velocityShort = velocityResult.velocity;
 
   // Sub-tool 2: Peak-Score Ceiling
@@ -465,6 +476,7 @@ export async function assembleScorecard(
     ratingLabel: band,
     conflictFlag,
     ind9RawComposite,
+    ind13Score,
     positiveCount: counts.positive,
     negativeCount: counts.negative,
     neutralCount: counts.neutral,
@@ -504,6 +516,7 @@ export async function assembleScorecard(
     ratingLabel: band,
     conflictFlag,
     ind9RawComposite,
+    ind13Score,
     positiveCount: counts.positive,
     negativeCount: counts.negative,
     neutralCount: counts.neutral,

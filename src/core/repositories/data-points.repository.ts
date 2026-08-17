@@ -46,6 +46,130 @@ function optionalDecimalsEqual(
   return a.equals(b);
 }
 
+/**
+ * Exported so other write paths that hand-roll their own transaction
+ * against data_points (e.g. nse-fii-dii.service.ts's multi-indicator atomic
+ * upsert) can apply the same retry-on-conflict handling without duplicating
+ * this check a third time.
+ */
+export function isUniqueViolation(err: unknown): boolean {
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return true;
+  // data_points_current_unique is a hand-written partial index (raw SQL
+  // migration, not modeled in schema.prisma), so depending on Prisma/engine
+  // version its violation may not always be normalized to P2002 — fall back
+  // to matching the underlying Postgres error.
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes('23505') || message.includes('data_points_current_unique');
+}
+
+/**
+ * The original upsert transaction body — read current row, then either
+ * skip/revise/insert. Correct for sequential runs; see `upsert`'s retry
+ * wrapper below for why that's not sufficient under concurrency.
+ */
+async function attemptUpsert(params: UpsertDataPointParams): Promise<UpsertResult> {
+  // Round to 6 decimal places to match Postgres column precision Decimal(20, 6).
+  const incomingValue = new Prisma.Decimal(params.value).toDecimalPlaces(
+    6,
+    Prisma.Decimal.ROUND_HALF_UP,
+  );
+
+  const forecastProvided = params.forecastValue !== undefined;
+  const previousProvided = params.previousValue !== undefined;
+  const incomingForecast = forecastProvided
+    ? normalizeOptionalDecimal(params.forecastValue ?? null)
+    : null;
+  const incomingPrevious = previousProvided
+    ? normalizeOptionalDecimal(params.previousValue ?? null)
+    : null;
+
+  const variant = params.variant ?? null;
+
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.dataPoint.findFirst({
+      where: {
+        indicatorId: params.indicatorId,
+        observationDate: params.observationDate,
+        variant,
+        isCurrent: true,
+      },
+    });
+
+    if (existing) {
+      const existingValue = new Prisma.Decimal(existing.value.toString());
+      const existingForecast =
+        existing.forecastValue === null ? null : new Prisma.Decimal(existing.forecastValue.toString());
+      const existingPrevious =
+        existing.previousValue === null ? null : new Prisma.Decimal(existing.previousValue.toString());
+
+      const valueMatches = existingValue.equals(incomingValue);
+      const forecastMatches = !forecastProvided || optionalDecimalsEqual(existingForecast, incomingForecast);
+      const previousMatches = !previousProvided || optionalDecimalsEqual(existingPrevious, incomingPrevious);
+
+      if (valueMatches && forecastMatches && previousMatches) {
+        return { action: 'skipped', dataPoint: existing };
+      }
+
+      logger.info(
+        {
+          indicatorId: params.indicatorId,
+          observationDate: params.observationDate,
+          previousValue: existingValue.toString(),
+          newValue: incomingValue.toString(),
+          forecastChanged: !forecastMatches,
+          previousChanged: !previousMatches,
+        },
+        'Revision detected — inserting new vintage',
+      );
+
+      await tx.dataPoint.update({
+        where: { id: existing.id },
+        data: { isCurrent: false },
+      });
+
+      const inserted = await tx.dataPoint.create({
+        data: {
+          indicatorId: params.indicatorId,
+          observationDate: params.observationDate,
+          variant,
+          value: incomingValue,
+          forecastValue: forecastProvided ? incomingForecast : existingForecast,
+          previousValue: previousProvided ? incomingPrevious : existingPrevious,
+          isCurrent: true,
+          source: params.source,
+          sourceMetadata: params.sourceMetadata ?? Prisma.JsonNull,
+          fetchedVia: params.fetchedVia ?? null,
+          dataQualityFlag: params.dataQualityFlag ?? 'revised',
+          notes: params.notes ?? null,
+          createdBy: params.createdBy ?? null,
+        },
+      });
+
+      return { action: 'revised', dataPoint: inserted };
+    }
+
+    const inserted = await tx.dataPoint.create({
+      data: {
+        indicatorId: params.indicatorId,
+        observationDate: params.observationDate,
+        variant,
+        value: incomingValue,
+        forecastValue: incomingForecast,
+        previousValue: incomingPrevious,
+        isCurrent: true,
+        source: params.source,
+        sourceMetadata: params.sourceMetadata ?? Prisma.JsonNull,
+        fetchedVia: params.fetchedVia ?? null,
+        dataQualityFlag: params.dataQualityFlag ?? null,
+        notes: params.notes ?? null,
+        createdBy: params.createdBy ?? null,
+      },
+    });
+
+    return { action: 'inserted', dataPoint: inserted };
+  });
+}
+
 export const dataPointsRepository = {
   /**
    * Upsert a data point with vintage-aware revision handling.
@@ -61,108 +185,37 @@ export const dataPointsRepository = {
    * a revision exactly once.
    *
    * Idempotent: re-running with same payload is a no-op.
+   *
+   * Explicitly idempotent under CONCURRENT re-runs too, as of 2026-08-17:
+   * the read-then-write in `attemptUpsert` is wrapped in a transaction, but
+   * Postgres's default Read Committed isolation does not serialize that
+   * pattern against a second overlapping transaction — two near-simultaneous
+   * calls for the same (indicatorId, observationDate) could both see "no
+   * conflicting current row" and both insert, which is what produced a real
+   * duplicate (IND_NIFTY_13_FII_LS_RATIO, 2026-07-16, vintages 1.3s apart)
+   * before the data_points_current_unique partial index existed. Now that
+   * the index is in place, the loser of such a race gets a unique-violation
+   * instead of a silent duplicate — caught here and retried once against the
+   * row the winner just committed, which correctly resolves to 'skipped'
+   * (same value) or 'revised' (different value) rather than crashing the job.
    */
   async upsert(params: UpsertDataPointParams): Promise<UpsertResult> {
-    // Round to 6 decimal places to match Postgres column precision Decimal(20, 6).
-    const incomingValue = new Prisma.Decimal(params.value).toDecimalPlaces(
-      6,
-      Prisma.Decimal.ROUND_HALF_UP,
-    );
-
-    const forecastProvided = params.forecastValue !== undefined;
-    const previousProvided = params.previousValue !== undefined;
-    const incomingForecast = forecastProvided
-      ? normalizeOptionalDecimal(params.forecastValue ?? null)
-      : null;
-    const incomingPrevious = previousProvided
-      ? normalizeOptionalDecimal(params.previousValue ?? null)
-      : null;
-
-    const variant = params.variant ?? null;
-
-    return prisma.$transaction(async (tx) => {
-      const existing = await tx.dataPoint.findFirst({
-        where: {
-          indicatorId: params.indicatorId,
-          observationDate: params.observationDate,
-          variant,
-          isCurrent: true,
-        },
-      });
-
-      if (existing) {
-        const existingValue = new Prisma.Decimal(existing.value.toString());
-        const existingForecast =
-          existing.forecastValue === null ? null : new Prisma.Decimal(existing.forecastValue.toString());
-        const existingPrevious =
-          existing.previousValue === null ? null : new Prisma.Decimal(existing.previousValue.toString());
-
-        const valueMatches = existingValue.equals(incomingValue);
-        const forecastMatches = !forecastProvided || optionalDecimalsEqual(existingForecast, incomingForecast);
-        const previousMatches = !previousProvided || optionalDecimalsEqual(existingPrevious, incomingPrevious);
-
-        if (valueMatches && forecastMatches && previousMatches) {
-          return { action: 'skipped', dataPoint: existing };
-        }
-
-        logger.info(
-          {
-            indicatorId: params.indicatorId,
-            observationDate: params.observationDate,
-            previousValue: existingValue.toString(),
-            newValue: incomingValue.toString(),
-            forecastChanged: !forecastMatches,
-            previousChanged: !previousMatches,
-          },
-          'Revision detected — inserting new vintage',
+    const MAX_ATTEMPTS = 2;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        return await attemptUpsert(params);
+      } catch (err) {
+        lastError = err;
+        if (!isUniqueViolation(err) || attempt === MAX_ATTEMPTS) throw err;
+        logger.warn(
+          { indicatorId: params.indicatorId, observationDate: params.observationDate, attempt },
+          'data_points_current_unique conflict — concurrent writer won the race, retrying',
         );
-
-        await tx.dataPoint.update({
-          where: { id: existing.id },
-          data: { isCurrent: false },
-        });
-
-        const inserted = await tx.dataPoint.create({
-          data: {
-            indicatorId: params.indicatorId,
-            observationDate: params.observationDate,
-            variant,
-            value: incomingValue,
-            forecastValue: forecastProvided ? incomingForecast : existingForecast,
-            previousValue: previousProvided ? incomingPrevious : existingPrevious,
-            isCurrent: true,
-            source: params.source,
-            sourceMetadata: params.sourceMetadata ?? Prisma.JsonNull,
-            fetchedVia: params.fetchedVia ?? null,
-            dataQualityFlag: params.dataQualityFlag ?? 'revised',
-            notes: params.notes ?? null,
-            createdBy: params.createdBy ?? null,
-          },
-        });
-
-        return { action: 'revised', dataPoint: inserted };
       }
-
-      const inserted = await tx.dataPoint.create({
-        data: {
-          indicatorId: params.indicatorId,
-          observationDate: params.observationDate,
-          variant,
-          value: incomingValue,
-          forecastValue: incomingForecast,
-          previousValue: incomingPrevious,
-          isCurrent: true,
-          source: params.source,
-          sourceMetadata: params.sourceMetadata ?? Prisma.JsonNull,
-          fetchedVia: params.fetchedVia ?? null,
-          dataQualityFlag: params.dataQualityFlag ?? null,
-          notes: params.notes ?? null,
-          createdBy: params.createdBy ?? null,
-        },
-      });
-
-      return { action: 'inserted', dataPoint: inserted };
-    });
+    }
+    // Unreachable (loop always returns or throws), but keeps TS happy.
+    throw lastError;
   },
 
   /**
