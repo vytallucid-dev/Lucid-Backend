@@ -1,51 +1,9 @@
 import { logger } from '@core/utils/logger';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import { compassConfigRepository } from '@core/repositories/compass-config.repository';
-import { ingestVixInput } from './inputs/vix-input.service';
-import { ingestHyOasInput } from './inputs/hy-oas-input.service';
-import { ingestYieldCurveInput } from './inputs/yield-curve-input.service';
-import { ingestDxyTrendInput } from './inputs/dxy-trend-input.service';
-import { ingestVixTermStructureInput } from './inputs/vix-term-structure-input.service';
-import { ingestUsDataStackInput } from './inputs/us-data-stack-input.service';
-import { ingestUsdJpyPriceInput } from './inputs/usdjpy-price-input.service';
-import { ingestUs02yCloseInput } from './inputs/us02y-close-input.service';
-import type { CompassConfigDefinition } from './compass-config.types';
+import { orderedCompassInputs } from './compass-input-registry';
 
 const JOB_NAME = 'compass_inputs_daily_fetch';
-
-type IngestFn = (
-  observationDate: Date,
-  config: CompassConfigDefinition,
-  isValidation?: boolean,
-) => Promise<void>;
-
-interface InputDescriptor {
-  code: string;
-  fn: IngestFn;
-}
-
-// US_DATA_STACK MUST run before YIELD_2S10S: the curve input (Phase 2B)
-// reads US_DATA_STACK's persisted Jobs sub-check for the same observation
-// date, so its compass_inputs row must already exist when the curve input
-// runs. This list is executed sequentially (see the for-loop below), so
-// order here is load-bearing.
-//
-// USDJPY_PRICE (Phase 4) is Shock Layer plumbing, not one of the six voting
-// inputs — ingestUsdJpyPriceInput takes no `config` param since it computes
-// nothing config-driven (no colorBand logic), so it's wrapped to match
-// IngestFn's shape.
-const INPUTS: InputDescriptor[] = [
-  { code: 'VIX_5D_AVG', fn: ingestVixInput },
-  { code: 'HY_OAS', fn: ingestHyOasInput },
-  { code: 'DXY_TREND', fn: ingestDxyTrendInput },
-  { code: 'VIX_TERM_STRUCTURE', fn: ingestVixTermStructureInput },
-  { code: 'US_DATA_STACK', fn: ingestUsDataStackInput },
-  { code: 'YIELD_2S10S', fn: ingestYieldCurveInput },
-  { code: 'USDJPY_PRICE', fn: (date, _config, isValidation) => ingestUsdJpyPriceInput(date, isValidation) },
-  // US02Y_CLOSE (Phase 6) is rate-gate plumbing, not a voting input — same
-  // config-less shape as USDJPY_PRICE.
-  { code: 'US02Y_CLOSE', fn: (date, _config, isValidation) => ingestUs02yCloseInput(date, isValidation) },
-];
 
 export interface CompassInputOrchestratorResult {
   logId: string;
@@ -85,7 +43,7 @@ export async function runAllCompassInputs(
   const inputsSucceeded: string[] = [];
   const inputsFailed: { code: string; error: string }[] = [];
 
-  for (const input of INPUTS) {
+  for (const input of orderedCompassInputs()) {
     try {
       await input.fn(observationDate, config, isValidation);
       inputsSucceeded.push(input.code);

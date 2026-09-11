@@ -2,6 +2,8 @@ import { prisma } from '@core/db/prisma';
 import { AppError } from '@core/middleware/error-handler';
 import { logger } from '@core/utils/logger';
 import { dataPointsRepository } from '@core/repositories/data-points.repository';
+import { Prisma } from '@prisma/client';
+import { isRateDecisionCode, withRateRange } from './rate-decision.helpers';
 
 /**
  * B4 edit path — correcting a typo in an already-entered DataPoint.
@@ -22,6 +24,8 @@ export interface EditDataPointInput {
   actual?: number;
   forecast?: number | null;
   previous?: number | null;
+  rateRangeLower?: number | null;
+  rateRangeUpper?: number | null;
   variant?: string | null;
   triggeredBy: string | null;
 }
@@ -40,6 +44,9 @@ export async function editManualEntry(input: EditDataPointInput): Promise<EditDa
   const existing = await prisma.dataPoint.findUnique({
     where: { id: input.dataPointId },
     include: { indicator: { select: { id: true, code: true, name: true } } },
+    // sourceMetadata comes along because a rate-decision edit has to merge into
+    // it rather than replace it — the notes and audit fields already on the row
+    // are not this edit's to discard.
   });
 
   if (!existing) {
@@ -98,13 +105,36 @@ export async function editManualEntry(input: EditDataPointInput): Promise<EditDa
     }
   }
 
-  const updated = await dataPointsRepository.editInPlace(input.dataPointId, {
+  // ── NO LONGER A SPECIAL CASE, EXCEPT FOR THE RANGE ──────────────────────
+  // This path used to need a whole parallel branch: rate decisions stored a
+  // bps change in `value` while the admin typed a level, so an edit that wrote
+  // the typed number straight into the column corrupted the score silently.
+  // Rate decisions now store levels like everything else, so the columns take
+  // what was typed — the same three lines every other indicator uses.
+  //
+  // The one thing still specific to a rate decision is the announced target
+  // range, which has no column and lives in metadata. `undefined` leaves it
+  // alone; an explicit null clears it.
+  const isRateDecision = isRateDecisionCode(existing.indicator.code);
+
+  const edits: Parameters<typeof dataPointsRepository.editInPlace>[1] = {
     observationDate: input.observationDate,
     value: input.actual,
     forecastValue: input.forecast,
     previousValue: input.previous,
     variant: input.variant,
-  });
+    ...(isRateDecision && (input.rateRangeLower !== undefined || input.rateRangeUpper !== undefined)
+      ? {
+          sourceMetadata: withRateRange(
+            (existing.sourceMetadata ?? {}) as Prisma.InputJsonObject,
+            input.rateRangeLower,
+            input.rateRangeUpper,
+          ),
+        }
+      : {}),
+  };
+
+  const updated = await dataPointsRepository.editInPlace(input.dataPointId, edits);
 
   logger.info(
     {

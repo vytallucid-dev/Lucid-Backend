@@ -40,8 +40,22 @@ export function evaluateHyOas(
  * 2s10s curve (T10Y2Y, in percentage points) — v2 inversion-episode logic.
  * First match wins:
  *   1. insideRedWindow AND jobsSubCheckBand != GREEN  → RED
- *   2. t10y2y >= 0 AND delta30 >= config.yieldCurve.curve_delta30_floor → GREEN
+ *   2. t10y2y >= 0 AND delta30 >= config.yieldCurve.curve_delta30_floor → GREEN,
+ *      UNLESS Phase C's real-shock gate blocks it (see below)
  *   3. otherwise                                       → YELLOW
+ *
+ * PHASE C — the GREEN clause is gated. As shipped, rule 2 fires during bear
+ * steepeners, which is why the curve voted GREEN at the term-premium peak in 26
+ * of 28 episodes and on 76.9% of days inside term-premium episodes against
+ * 49.3% outside: it votes MORE positively during long-end stress than at other
+ * times. When `yields.curve_green_requires_no_real_shock` is set and R1 is RED,
+ * rule 2 is skipped and the input falls through to YELLOW.
+ *
+ * Note what this does and does not do. It moves 1.0 of weight from green to
+ * yellow; it can never add red, and candidate Risk-Off is gated on red weight
+ * alone. So it removes FALSE RISK-ON readings rather than creating Risk-Off
+ * ones — which is the point, because a false Risk-On during long-end stress is
+ * the reading that invites sizing up into it.
  *
  * `insideRedWindow` is computed by the caller from the episode state machine
  * (compass-curve-state-machine.ts) — this function is pure and does no date
@@ -54,10 +68,58 @@ export function evaluate2s10s(
   insideRedWindow: boolean,
   jobsSubCheckBand: ColorBand,
   config: CompassConfigDefinition,
+  realYieldShockBand: ColorBand | null = null,
 ): ColorBand {
   if (insideRedWindow && jobsSubCheckBand !== 'GREEN') return 'RED';
-  if (t10y2y >= 0 && delta30 !== null && delta30 >= config.yieldCurve.curve_delta30_floor) return 'GREEN';
+  const greenClause =
+    t10y2y >= 0 && delta30 !== null && delta30 >= config.yieldCurve.curve_delta30_floor;
+  if (greenClause && !curveGreenBlockedByRealShock(config, realYieldShockBand)) return 'GREEN';
   return 'YELLOW';
+}
+
+/**
+ * Phase C — is the 2s10s GREEN clause gated off by a real-yield shock?
+ *
+ * Returns false (gate inactive) when the config predates the gate, when the
+ * config disables it, or when R1 is unavailable — R1 needs DFII10, which starts
+ * 2003-01-02, so before then this is permanently inert and the curve behaves
+ * exactly as it did.
+ */
+export function curveGreenBlockedByRealShock(
+  config: CompassConfigDefinition,
+  realYieldShockBand: ColorBand | null,
+): boolean {
+  if (!config.yields?.curve_green_requires_no_real_shock) return false;
+  return realYieldShockBand === 'RED';
+}
+
+/**
+ * R1_REAL_YIELD_SHOCK — the 60-observation change in the 10-year TIPS real
+ * yield (FRED DFII10), in basis points.
+ *
+ *   RED    at >= real_yield_shock_60d_red_bp     (60bp)
+ *   YELLOW at >= real_yield_shock_60d_yellow_bp  (30bp)
+ *   GREEN  otherwise
+ *
+ * NON-VOTING in this phase: it carries no entry in config.weights and is not in
+ * EXPECTED_INPUT_CODES. It is computed daily, displayed, and consumed by the
+ * 2s10s gate above.
+ *
+ * Deliberately ONE-SIDED. A symmetric negative leg (real yields FALLING fast)
+ * was never tested and must not be added without its own evidence.
+ *
+ * Null delta (insufficient history, stale series, or any date before DFII10
+ * begins in 2003) returns null rather than a band — the caller flags it, and a
+ * null band can never gate the curve.
+ */
+export function evaluateRealYieldShock(
+  change60dBp: number | null,
+  config: CompassConfigDefinition,
+): ColorBand | null {
+  if (change60dBp === null || !config.yields) return null;
+  if (change60dBp >= config.yields.real_yield_shock_60d_red_bp) return 'RED';
+  if (change60dBp >= config.yields.real_yield_shock_60d_yellow_bp) return 'YELLOW';
+  return 'GREEN';
 }
 
 /**

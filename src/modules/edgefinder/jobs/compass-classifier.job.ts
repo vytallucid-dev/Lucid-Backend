@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { logger } from '@core/utils/logger';
 import { runCompassClassifier } from '@modules/edgefinder/services/compass/compass-classifier.service';
+import { runCompassModules } from '@modules/edgefinder/services/compass/modules/compass-modules.service';
 import { isJobRunning } from '@modules/nifty/jobs/job-guard';
 
 const JOB_NAME = 'compass_classifier_daily_run';
@@ -24,6 +25,20 @@ export async function runCompassClassifierJob(): Promise<void> {
   logger.info({ jobName: JOB_NAME }, 'Compass classifier cron tick');
   try {
     const result = await runCompassClassifier('cron', null);
+
+    // Phase C: layer 1 + layer 2 run AFTER the classifier and read the vote it
+    // actually produced, rather than re-deriving it. A failure here must not
+    // fail the classification — the regime is the load-bearing output and
+    // EdgeFinder consumes it; the module readings are presentation.
+    if (result.status === 'success') {
+      const modules = await runCompassModules();
+      if (modules.status !== 'success') {
+        logger.warn(
+          { jobName: JOB_NAME, status: modules.status, reason: modules.reason },
+          'Compass modules did not complete — the regime is unaffected',
+        );
+      }
+    }
     logger.info(
       {
         jobName: JOB_NAME,

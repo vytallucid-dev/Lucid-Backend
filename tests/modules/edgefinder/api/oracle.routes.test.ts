@@ -139,7 +139,7 @@ const fxPairCodes = ['EURUSD', 'GBPUSD', 'USDJPY', 'EURJPY', 'GBPJPY'];
 
 function makeAssets() {
   return [
-    ...fxPairCodes.map((code, i) => ({ id: `asset-${code}`, code })),
+    ...fxPairCodes.map((code) => ({ id: `asset-${code}`, code })),
     { id: 'asset-XAUUSD', code: 'XAUUSD' },
     { id: 'asset-SPY', code: 'SPY' },
     { id: 'asset-NAS100', code: 'NAS100' },

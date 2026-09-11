@@ -27,6 +27,9 @@ vi.mock('@modules/edgefinder/services/compass/inputs/us-data-stack-input.service
 vi.mock('@modules/edgefinder/services/compass/inputs/usdjpy-price-input.service', () => ({
   ingestUsdJpyPriceInput: vi.fn(),
 }));
+vi.mock('@modules/edgefinder/services/compass/inputs/real-yield-shock-input.service', () => ({
+  ingestRealYieldShockInput: vi.fn(),
+}));
 vi.mock('@modules/edgefinder/services/compass/inputs/us02y-close-input.service', () => ({
   ingestUs02yCloseInput: vi.fn(),
 }));
@@ -46,6 +49,7 @@ import { ingestDxyTrendInput } from '@modules/edgefinder/services/compass/inputs
 import { ingestVixTermStructureInput } from '@modules/edgefinder/services/compass/inputs/vix-term-structure-input.service';
 import { ingestUsDataStackInput } from '@modules/edgefinder/services/compass/inputs/us-data-stack-input.service';
 import { ingestUsdJpyPriceInput } from '@modules/edgefinder/services/compass/inputs/usdjpy-price-input.service';
+import { ingestRealYieldShockInput } from '@modules/edgefinder/services/compass/inputs/real-yield-shock-input.service';
 import { ingestUs02yCloseInput } from '@modules/edgefinder/services/compass/inputs/us02y-close-input.service';
 import { runAllCompassInputs } from '@modules/edgefinder/services/compass/compass-input-orchestrator.service';
 
@@ -59,10 +63,12 @@ const mockedCorr = ingestVixTermStructureInput as unknown as ReturnType<typeof v
 const mockedStack = ingestUsDataStackInput as unknown as ReturnType<typeof vi.fn>;
 const mockedJpy = ingestUsdJpyPriceInput as unknown as ReturnType<typeof vi.fn>;
 const mockedUs02y = ingestUs02yCloseInput as unknown as ReturnType<typeof vi.fn>;
+const mockedR1 = ingestRealYieldShockInput as unknown as ReturnType<typeof vi.fn>;
 const mockedResolveConfig =
   compassConfigRepository.resolveForDate as unknown as ReturnType<typeof vi.fn>;
 
-const ALL_INPUT_MOCKS = [mockedVix, mockedHy, mockedYc, mockedDxy, mockedCorr, mockedStack, mockedJpy, mockedUs02y];
+// Phase C adds REAL_YIELD_SHOCK (R1) — non-voting, but still orchestrated.
+const ALL_INPUT_MOCKS = [mockedVix, mockedHy, mockedYc, mockedDxy, mockedCorr, mockedStack, mockedJpy, mockedUs02y, mockedR1];
 
 describe('runAllCompassInputs', () => {
   beforeEach(() => {
@@ -73,10 +79,10 @@ describe('runAllCompassInputs', () => {
     ALL_INPUT_MOCKS.forEach((m) => m.mockResolvedValue(undefined));
   });
 
-  it('returns status=success when all 8 inputs succeed', async () => {
+  it('returns status=success when all 9 inputs succeed', async () => {
     const result = await runAllCompassInputs('manual', null);
     expect(result.status).toBe('success');
-    expect(result.inputsSucceeded).toHaveLength(8);
+    expect(result.inputsSucceeded).toHaveLength(9);
     expect(result.inputsFailed).toHaveLength(0);
     expect(mockedComplete).toHaveBeenCalledTimes(1);
     expect(mockedComplete.mock.calls[0][0].status).toBe('success');
@@ -101,7 +107,7 @@ describe('runAllCompassInputs', () => {
     const result = await runAllCompassInputs('cron', null);
     expect(result.status).toBe('failed');
     expect(result.inputsSucceeded).toHaveLength(0);
-    expect(result.inputsFailed).toHaveLength(8);
+    expect(result.inputsFailed).toHaveLength(9);
   });
 
   it('runs inputs sequentially (not in parallel)', async () => {

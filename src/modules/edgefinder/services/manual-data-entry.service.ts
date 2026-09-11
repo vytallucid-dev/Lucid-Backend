@@ -5,7 +5,7 @@ import { logger } from '@core/utils/logger';
 import { dataPointsRepository } from '@core/repositories/data-points.repository';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import { calendarEventDeferralsRepository } from '@core/repositories/calendar-event-deferrals.repository';
-import { getPriorRateLevel, levelToBpsChange } from './rate-decision.helpers';
+import { getPriorRateLevel, isRateDecisionCode, withRateRange } from './rate-decision.helpers';
 
 // Per-indicator log name (mirrors the NIFTY manual-input convention
 // `manual_input_<code>`) so each indicator's detail page can filter its own
@@ -26,6 +26,14 @@ export interface ManualEntryInput {
   actual: number;
   forecast: number | null;
   previous: number | null;
+  /**
+   * Announced target range, for banks that publish one. Independent of
+   * `actual`: EdgeFinder still scores the single announced figure, and this is
+   * carried for Compass, which needs the policy rate as a level. Null for every
+   * bank that publishes a single rate. See rateRangeFromMetadata.
+   */
+  rateRangeLower?: number | null;
+  rateRangeUpper?: number | null;
   notes: string | null;
   triggeredBy: string | null;
   // When a previous↔stored-actual mismatch is detected and this is not true,
@@ -94,12 +102,11 @@ export interface ManualEntryResult {
   variant: string | null;
   value: number;
   isRateDecision: boolean;
+  // The announced rate. Since rate decisions store levels this is simply
+  // `value` again, kept on the result so the admin UI's success message can
+  // name it without re-deriving anything.
   rateLevel?: number;
-  // Change 2 (rate decision scores surprise) — Step 1. Only set for rate
-  // decisions when a forecast was submitted: the EXPECTED absolute rate
-  // level as entered (same unit as `rateLevel`/`actual`), for display. The
-  // stored/scored `forecastValue` below is the bps-change conversion of
-  // this value — see levelToBpsChange.
+  /** The expected rate, when a forecast was submitted. Equals `forecastValue`. */
   rateExpectedLevel?: number;
   forecastValue: number | null;
   previousValue: number | null;
@@ -132,7 +139,7 @@ export async function ingestManualEntry(
     );
   }
 
-  const isRateDecision = indicator.code.endsWith('_RATE');
+  const isRateDecision = isRateDecisionCode(indicator.code);
 
   // ── Variant validation ────────────────────────────────────────────────
   // Allowed variants are data (IndicatorVariant), never a hardcoded list —
@@ -187,8 +194,11 @@ export async function ingestManualEntry(
   // stored actual (the same value the frontend auto-fills). If it differs, the
   // source likely revised last month's figure — or it's a typo.
   //
-  // Skipped for rate decisions: those null out `previous` and store a bps
-  // delta, so there is no typed previous to compare. Skipped when no `previous`
+  // Still skipped for rate decisions, though no longer for the old reason.
+  // They now store levels like everything else, but `previousValue` is taken
+  // from the last decision on file rather than from what the admin typed —
+  // the prior rate is a fact this system already holds, so there is no typed
+  // value standing in for it that could be wrong. Skipped when no `previous`
   // was submitted, or when there is no prior data point to compare against.
   //
   // On mismatch:
@@ -239,35 +249,42 @@ export async function ingestManualEntry(
     const enteredAt = new Date().toISOString();
 
     if (isRateDecision) {
+      // Rate decisions store LEVELS, the same as every other indicator. The
+      // announced rate goes in `value`, the expected rate in `forecastValue`,
+      // and the rate this decision moved from in `previousValue`. The handler
+      // diffs actual against forecast to score the surprise — see
+      // rate-decision.helpers.ts for why the old bps conversion did no work.
+      //
+      // `previous` is taken from the last decision on file rather than from
+      // what the admin typed, because for a rate decision that is a fact the
+      // system already holds and cannot get wrong. Null on a first release,
+      // where there is no prior rate — never a fabricated zero.
       const priorRate = await getPriorRateLevel(indicator.id, input.observationDate);
       const firstRelease = priorRate === null;
-      const bpsChange = firstRelease ? 0 : (input.actual - priorRate) * 100;
 
-      // Change 2 (rate decision scores surprise) — Step 1. `input.forecast` is
-      // the expected absolute rate level, entered the same way `actual` is.
-      // Converted to a bps-change delta against the SAME priorRate as `value`
-      // uses, so the two land in the same unit and the handler can diff them
-      // directly. No prior rate (first release) → no baseline to convert
-      // against → forecastBpsChange stays null, same as omitting a forecast.
-      const forecastBpsChange = levelToBpsChange(input.forecast, priorRate);
-
-      const sourceMetadata: Prisma.InputJsonObject = {
-        manualEntry: true,
-        rate_level: input.actual,
-        ...(input.forecast !== null ? { expected_rate_level: input.forecast } : {}),
-        ...(firstRelease ? { first_release: true } : {}),
-        notes: input.notes ?? null,
-        enteredAt,
-        ...(input.triggeredBy ? { enteredBy: input.triggeredBy } : {}),
-      };
+      const sourceMetadata: Prisma.InputJsonObject = withRateRange(
+        {
+          manualEntry: true,
+          ...(firstRelease ? { first_release: true } : {}),
+          notes: input.notes ?? null,
+          enteredAt,
+          ...(input.triggeredBy ? { enteredBy: input.triggeredBy } : {}),
+        },
+        input.rateRangeLower,
+        input.rateRangeUpper,
+      );
 
       const upsert = await dataPointsRepository.upsert({
         indicatorId: indicator.id,
         observationDate: input.observationDate,
         variant: submittedVariant,
-        value: bpsChange,
-        forecastValue: forecastBpsChange,
-        previousValue: null,
+        value: input.actual,
+        forecastValue: input.forecast,
+        // The last decision on file, not what the admin typed: for a rate
+        // decision the prior level is a fact this system already holds, and
+        // deriving it cannot be mistyped. Null on a first release, where there
+        // is genuinely no prior rate — never a fabricated zero.
+        previousValue: priorRate,
         source: 'manual',
         sourceMetadata,
         fetchedVia: log.id,
@@ -294,10 +311,8 @@ export async function ingestManualEntry(
           indicatorCode: indicator.code,
           observationDate: input.observationDate.toISOString(),
           rateLevel: input.actual,
-          priorRate,
-          bpsChange,
           expectedRateLevel: input.forecast,
-          forecastBpsChange,
+          priorRate,
           firstRelease,
           action: upsert.action,
         },
@@ -310,12 +325,12 @@ export async function ingestManualEntry(
         indicator: { code: indicator.code, name: indicator.name },
         observationDate: input.observationDate,
         variant: submittedVariant,
-        value: bpsChange,
+        value: input.actual,
         isRateDecision: true,
         rateLevel: input.actual,
         ...(input.forecast !== null ? { rateExpectedLevel: input.forecast } : {}),
-        forecastValue: forecastBpsChange,
-        previousValue: null,
+        forecastValue: input.forecast,
+        previousValue: priorRate,
         notes: input.notes,
       };
     }

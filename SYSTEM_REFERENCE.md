@@ -894,71 +894,210 @@ The system auto-selects start/end anchors if not specified:
 
 ## 3.3 Compass (EdgeFinder Sub-Tool)
 
-The Compass is a regime classifier that classifies the macro environment as **Risk-On**, **Caution**, or **Risk-Off** daily. It drives the `compassAdjustment` on EdgeFinder asset scorecards.
+Compass classifies the macro environment daily and drives `compassAdjustment` on
+EdgeFinder asset scorecards. Since Phase C it is a **two-layer** tool: five modules
+that each read one part of the market, and a deterministic plain-language synthesis
+over them. The risk-on/risk-off regime is one module's verdict, not the headline.
 
-### 6 Compass Inputs (all daily, stored in `compass_inputs` table)
+**Location:** `src/modules/edgefinder/services/compass/`
 
-| Input Code | Description | Source | Raw Value | Derived Value | Weight |
-|------------|-------------|--------|-----------|---------------|--------|
-| `VIX_5D_AVG` | VIX 5-day average | EODHD (`VIX.INDX`) | Today's VIX close | 5-day moving average | 1.0 |
-| `HY_OAS` | High-Yield OAS spread | FRED (`BAMLH0A0HYM2`) | Today's OAS level (%) | 30-day change | 1.5 |
-| `YIELD_2S10S` | 2s10s yield curve | FRED (`T10Y2Y`) | Today's spread | 30-day change | 1.5 |
-| `DXY_TREND` | DXY trend vs 50d SMA | EODHD (`DXY.INDX`) | Today's close | % distance from 50d SMA | 1.0 |
-| `GOLD_DXY_CORR` | Gold/DXY 60-day correlation | EODHD (`XAUUSD.FOREX` + `DXY.INDX`) | Pearson correlation | Same (correlation) | 1.0 |
-| `US_DATA_STACK` | Composite: CPI+GDP+Jobs | FRED (4 series) | null | null | 2.0 |
+### 3.3.1 The six voting inputs
 
-**Total weight = 8.0**
+Config version **v3** (from 2026-09-09). Weights must sum to exactly **8.0** or
+`compassConfigRepository.resolveForDate` throws for every caller.
 
-### Band Classification (per input)
+| Input Code | Source | Derived value | Weight | Band rule |
+|---|---|---|---|---|
+| `VIX_5D_AVG` | EODHD `VIX.INDX` | 5-obs average | 1.0 | `<18` GREEN, `>25` RED |
+| `VIX_TERM_STRUCTURE` | EODHD `VIX.INDX` / `VIX3M.INDX` | ratio | 1.5 | `>1.0` RED, `>=0.9` YELLOW |
+| `HY_OAS` | FRED `BAMLH0A0HYM2` | 10-obs delta | 1.5 | `delta10>0.75` or `level>5.5` RED |
+| `YIELD_2S10S` | FRED `T10Y2Y` | 30-obs delta | 1.0 | inversion-episode state machine — see 3.3.3 |
+| `DXY_TREND` | EODHD `DXY.INDX` | abs(close/sma50 − 1) | 1.0 | `move5>0.03` RED; calm GREEN |
+| `US_DATA_STACK` | FRED CPI/GDP/PAYEMS/UNRATE | sub-checks | 2.0 | majority of three |
 
-| Input | GREEN | YELLOW | RED |
-|-------|-------|--------|-----|
-| VIX_5D_AVG | < 18 | 18–25 | > 25 |
-| HY_OAS | < 4.5% AND tightening (30d chg < 0) | otherwise | > 7.0% |
-| YIELD_2S10S | level > 0 AND steepening | otherwise | level < 0 AND re-steepening (30d chg > 0.1) |
-| DXY_TREND | `|pctDistFrom50d| > 2%` (clear direction) | `|5d pct chg| ≤ 3%` AND `|dist| ≤ 2%` | `|5d pct chg| > 3%` (sharp break) |
-| GOLD_DXY_CORR | correlation < −0.5 (normal inverse) | −0.5 to 0 | > 0 (broken correlation) |
-| US_DATA_STACK | majority of 3 sub-bands = GREEN | mixed | majority = RED |
+**Non-voting inputs** (no weight, absent from `EXPECTED_INPUT_CODES`):
+`USDJPY_PRICE` (Shock Layer plumbing), `US02Y_CLOSE` (rate-gate plumbing), and
+`REAL_YIELD_SHOCK` (Phase C, see 3.3.3).
 
-**US_DATA_STACK sub-bands:**
-- CPI trajectory (last 3 YoY): rising→RED, falling→GREEN, mixed→YELLOW
-- GDP level (last 2 QoQ %): both > 1.5→GREEN, any < 0→RED, else→YELLOW
-- Jobs (Sahm rule + NFP): Sahm triggered→RED, avg NFP > 100k→GREEN, avg < 50k→RED
+Ingest order is declared as data in `compass-input-registry.ts` with an explicit
+`dependsOn`, and execution order is derived by topological sort. `YIELD_2S10S`
+depends on `US_DATA_STACK` (its jobs sub-check) and `REAL_YIELD_SHOCK` (the band
+its GREEN clause is gated on).
 
-### Regime Classification
-1. **Sum weighted votes** by color band.
-2. **Crisis override:** VIX 5d avg > 30 **AND** HY OAS > 7.0 → force `Risk-Off` regardless of votes.
-3. **Candidate regime:** Red ≥ 4 → Risk-Off; Green ≥ 5 AND Red ≤ 1 → Risk-On; otherwise → Caution.
-4. **Persistence rule:** Active regime only flips after the candidate matches for **5 consecutive days** (prevents whipsawing). Crisis override fires same-day without persistence.
+### 3.3.2 Regime classification
 
-### Risk-Off Compass Overrides
-Applied only when `activeRegime = 'Risk-Off'`:
+1. **Sum weighted votes** by band (`sumVoteWeights`).
+2. **Candidate regime**: `red >= 3.5` → Risk-Off; `green >= 5.0 AND red <= 1.0` →
+   Risk-On; else Caution.
+3. **Persistence (asymmetric)**: a candidate must hold **3** consecutive days to
+   move toward higher severity, **5** toward lower.
+4. **Shock Layer**: Trigger A (VIX close > 32 AND OAS 5-obs delta > 0.5) forces
+   `final_regime = Risk-Off` same-day. Trigger B (USDJPY 5-obs fall < −2.5% AND
+   rising VIX 5d avg) does not change the regime; it bypasses the rate gate on
+   Overrides 3 and 5.
+5. `final_regime = Risk-Off if shockAActive else active_regime`.
 
-| Override | Applies To | Logic |
-|----------|-----------|-------|
-| `OVERRIDE_1_BAD_NEWS_GOOD_NEWS` | SPY, NAS100 | Each weak US jobs score (−1) → +2 adjustment (bad macro news = good for equities in rate-cut hope) |
-| `OVERRIDE_2_GOLD_INFLATION_HEDGE` | XAUUSD | CPI/PPI/PCE scores are re-flipped to their USD-direction sign (Gold also benefits from inflation when USD is weak) |
-| `OVERRIDE_3_JPY_SAFE_HAVEN` | JPY | +1 flat boost (yen rallies in risk-off regardless of fundamentals) |
-| `OVERRIDE_4_USD_WEAK_JOBS` | USD | Each weak US jobs score (−1) → +1 adjustment (bad jobs data can pause Fed hiking, softening USD weakness slightly) |
+**`activeRegime` vs `finalRegime`.** The persistence machine is shock-unaware by
+design: a shock never writes `active_regime`. **`finalRegime` is the real answer**
+and is what EdgeFinder and the UI consume. Anything reading `activeRegime` alone
+is blind to the entire Shock Layer.
 
-### Cron
-1. `compass_inputs_daily_fetch` — **22:30 UTC**: ingests all 6 inputs.
-2. `compass_classifier_daily_run` — **23:00 UTC**: classifies regime from those inputs.
+The v1 **crisis override is retired**. `crisis_override_fired` is kept as a column
+and is written `false` unconditionally.
 
-### Storage
-- Inputs: `compass_inputs` table (`observationDate`, `inputCode`, `rawValue`, `derivedValue`, `colorBand`, `subChecks`, `source`).
-- Classifications: `compass_classifications` table (`classificationDate`, `candidateRegime`, `activeRegime`, `persistenceDaysCount`, `crisisOverrideFired`, `totalGreenWeight`, `totalYellowWeight`, `totalRedWeight`, `voteBreakdown`).
+### 3.3.3 Phase C additions
 
-### Log stored as
-- Inputs: `job_name = 'compass_inputs_daily_fetch'`
-- Classifier: `job_name = 'compass_classifier_daily_run'`
+**`REAL_YIELD_SHOCK` (R1)** — the 60-observation change in the 10-year TIPS real
+yield (FRED `DFII10`), in bp. RED at ≥ +60, YELLOW at ≥ +30, else GREEN.
+**Non-voting**: computed and displayed daily, in shadow. Adding it at its proposed
+weight of 1.5 would take the scale to 9.5 while the thresholds stayed calibrated
+for 8.0. One-sided by design — only fast RISES are banded. Not computable before
+2003-01-02.
 
-### Testing checklist for Compass
-1. Check `compass_inputs` for today: should have exactly 6 rows (one per input code). If < 6, classifier will skip with `status = 'skipped_no_inputs'`.
-2. Check `compass_classifications` for today: verify `activeRegime`, `candidateRegime`, `persistenceDaysCount`.
-3. If `crisisOverrideFired = true`, verify `VIX_5D_AVG derivedValue > 30` AND `HY_OAS rawValue > 7.0`.
-4. Check `data_fetch_log WHERE job_name IN ('compass_inputs_daily_fetch', 'compass_classifier_daily_run')` for recent dates.
-5. In EdgeFinder scorecards, `regimeAtCompute` should match `activeRegime` in `compass_classifications` for the same date.
+**The 2s10s GREEN gate** (`yields.curve_green_requires_no_real_shock`) — the GREEN
+clause is suppressed while R1 is RED. As shipped, `t10y2y >= 0 AND delta30 >= floor`
+fires during bear steepeners, so the curve voted GREEN at the term-premium peak in
+26 of 28 episodes since 1990. The gate moves 1.0 of weight green to yellow and can
+never add red: it removes **false Risk-On**, it does not create Risk-Off.
+
+**The trading-calendar gate** — `runCompassClassifier` refuses to write on a
+non-trading day, using the rule-derived NYSE/SIFMA calendar in
+`@core/utils/us-market-calendar`. See "Known data incidents" below for why.
+
+**Layer 1 / layer 2** — `compass_module_readings`, `compass_module_states` and
+`compass_synthesis` hold the five module readings and the synthesis. A reading has
+two independent axes: `(color_band, is_voting, weight)` is the vote, `state_label`
+is a non-vote description. Every explanation is stored as `{templateId, params}`
+and rendered server-side; nothing is stored as prose. Every synthesis sentence
+carries traces that must resolve to a reading present for the same date.
+
+### 3.3.4 Validation
+
+`runValidation()` **replays** eight windows through the shipped pure scoring
+modules against FRED/Yahoo history with point-in-time ALFRED macro vintages. It
+does not read `compass_classifications`.
+
+Latest result (config v3): **5 of 8 pass** — V1 2008_GFC, V5 2024_FULL_YEAR,
+V6 2024_YEN_UNWIND, V7 2025_TARIFF_SHOCK, V8 2026_IRAN_SHOCK. V2, V3 and V4 fail
+for three different reasons; see the Phase C handover.
+
+Pre-2023 windows are reported as a **bracket** (absent / proxy / forced-red), never
+a single number, because FRED has retroactively truncated every ICE BofA OAS series
+to 2023-09-11 onward.
+
+### 3.3.5 Cron
+
+1. `compass_inputs_daily_fetch` — **22:30 UTC**: 9 inputs in registry order.
+2. `compass_classifier_daily_run` — **23:00 UTC**: classifies, then runs the module
+   and synthesis layer. A module failure logs a warning and does not fail the
+   classification.
+
+### 3.3.6 Storage
+
+`compass_inputs`, `compass_classifications` (vintage-aware), `compass_config`,
+`compass_curve_state` / `compass_shock_state` (recomputable caches, keyed
+`(is_validation, research_tag)`), `compass_validation_reports`,
+`compass_module_readings` / `compass_module_states` / `compass_synthesis`, and
+`compass_classifications_archive` / `compass_inputs_archive`.
+
+`compass_classifications` and `compass_inputs` carry `config_version_label`
+(which config produced the row), `research_tag` (replay output) and
+`is_trading_day`.
+
+### 3.3.7 Known data incidents
+
+**Live series archived and restarted, 2026-09-09.** The classification history
+accumulated 2026-05-18 to 2026-09-08 (104 classification rows, 755 input rows) was
+**abandoned, not repaired**, and moved to `compass_classifications_archive` and
+`compass_inputs_archive`. It remains fully queryable. Four independent reasons:
+
+1. It straddles the v1 to v2 config cutover mid-series (2026-07-15/16), and nothing
+   on the row recorded which config produced it — hence `config_version_label`.
+2. **28 of 104 classification rows are weekends**, and three more are US market
+   holidays (Juneteenth 2026-06-19, Independence Day observed 2026-07-03, Labor Day
+   2026-09-07). EODHD returns the previous close and the FRED forward-fill carries
+   through, so all six inputs looked "present" on a closed market. Every one of
+   those rows advanced the persistence counter, so a regime transition could
+   complete on a Sunday on no new information.
+3. **All 46 pre-cutover `DXY_TREND` rows are mis-scaled.** They store
+   `abs(close/sma50 − 1) * 100` — a percent — where the v2 band evaluator expects a
+   fraction. 39 are YELLOW that should be GREEN and 7 are GREEN that should be
+   YELLOW. (Phase B's FINDINGS.md section 10.2 describes this as `abs(close − sma50)`
+   "in index points"; that is incorrect — tested against the stored values, the
+   index-points formula matches 0 of 46 rows and the percent formula matches all 46.)
+4. `final_regime` is the empty string on the 45 pre-Phase-4 rows.
+
+Also of record: `final_regime <> active_regime` on **zero** rows of the archived
+series — Trigger A never fired in production.
+
+The 30 abandoned `US02Y_CLOSE` validation rows from a 2020 backfill attempt were
+archived at the same time, with their own reason string.
+
+**EdgeFinder scorecards were NOT touched.** Their historical `regime_at_compute`
+is a record of what was computed at the time.
+
+### 3.3.8 Operational constraints
+
+- **The EODHD client's 15-call/day cap is process-global and shared with NIFTY.**
+  Compass spends ~5/day, NIFTY ~2. Do not add a Compass series to EODHD without
+  re-checking that budget. This is one of two reasons validation replays from
+  FRED/Yahoo rather than the live input path (the other being EODHD's 12-month
+  history limit).
+- **Validation substitutes sources**, and the substitution error is measured and
+  persisted in every report: VIX from `VIXCLS` (band differs on 0.0% of days),
+  VIX3M from `VXVCLS` (identical series), DXY from Yahoo `DX-Y.NYB` (`dev` crosses
+  its threshold differently on 0.5% of days), USDJPY from `DEXJPUS` (plumbing only).
+- **The ACM term premium was removed on 2026-09-10.** It was the only manually
+  refreshed source in Compass — a monthly rewrite of a checked-in CSV, because the
+  NY Fed publishes it only as a legacy `.xls` and not on FRED. Kim-Wright
+  (`FRED:THREEFYTP10`) is now the sole term-premium reading: daily, automatic,
+  already ingesting. The framing ACM existed to support (a term premium is a model
+  estimate and models differ) is stated in that reading's standing copy instead of
+  being demonstrated with a second series. See the Phase C handover §13 for the
+  archive location.
+- **The BoE Bank Rate is entered by hand**, through the same admin path as every
+  other rate decision. BIS `WS_CBPOL` carries no UK series this system reads, and
+  the rate moves at roughly eight scheduled meetings a year, so a scraper would be
+  more moving parts for less reliability. `POLICY_RATE_GB` reads the level off the
+  `UK_BOE_RATE` data points; `GBP_CARRY` follows. Staleness limit 55 trading days —
+  wider than the BIS series' 10, because a policy rate is a step function rather
+  than a daily observation (see `admin-policy-rate.source.ts`). Any reading whose
+  source begins `ADMIN:` carries a Manual chip in the UI.
+- **BIS gives the Fed's target-range MIDPOINT**, not a bound: `CBPOL_US` reads
+  3.625 against an announced 3.50-3.75 range, which is why Compass shows 3.63%
+  where EdgeFinder shows the 3.75 upper bound for the same decision. The rate entry
+  card carries an optional lower/upper range pair so the relationship is visible
+  rather than mysterious. The same convention gap applies to the BoJ and ECB.
+- **Rate decisions store LEVELS, like every other indicator** (since 2026-09-10):
+  `value` is the announced rate, `forecastValue` the expected rate, `previousValue`
+  the rate it moved from. The handler diffs actual against forecast to score the
+  surprise — unchanged behaviour, only the unit moved from basis points to
+  percentage points (tolerance 0.01bp == 0.0001pp). They previously stored bps
+  deltas with the levels hidden in metadata, which is what rendered every
+  central-bank rate as 0.00%/0.00%/0.00% on the scorecard; see handover §15 and
+  §18. The only thing still in `sourceMetadata` is the optional announced target
+  range (`rate_range_lower` / `rate_range_upper`), which has no column.
+- **`isRateDecisionCode` matches on the `_RATE` suffix and over-matches.**
+  `IND_NIFTY_04_RBI_RATE` is a NIFTY `cycle_regime` indicator, not a rate decision.
+  Every current caller is on an EdgeFinder-only path so nothing breaks, but anything
+  that reaches the database by that predicate must scope on
+  `scoring_rules.rule_type = 'rate_decision'` instead.
+- **Dead config keys**: `staleness.forward_fill_enabled` and
+  `rateGate.rate_gate_operator` are stored and never read.
+
+### 3.3.9 Testing checklist
+
+1. `compass_inputs` for a trading day: 9 rows. On a weekend or US market holiday:
+   **zero**, and `data_fetch_log` shows `skipped_non_trading_day`.
+2. `compass_classifications` for today: check `final_regime` (not `active_regime`),
+   `persistence_days_count`, `config_version_label`.
+3. `compass_module_readings` for today: ~23 rows across 5 modules (ACM removed;
+   BoE Bank Rate and GBP carry added); every row has a
+   `source_code`, `source_as_of` and `staleness_state`.
+4. `compass_synthesis` for today: every sentence's traces resolve to a reading of
+   the same date (`assertTraceable` enforces this at write time).
+5. `npx tsx scripts/phase7-stage0-ground-truth.ts` — read-only health check.
+6. EdgeFinder scorecards: `regimeAtCompute` should match `final_regime`.
 
 ---
 

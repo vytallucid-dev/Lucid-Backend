@@ -33,11 +33,26 @@ export async function ingestUsDataStackInput(
   // public CDN starts returning 403 when many requests hit in rapid bursts,
   // so we trade a small amount of latency for stability across both live
   // and backfill flows.
+  //
+  // Phase C — POINT-IN-TIME. All four of these series are REVISED, and until
+  // now the validation path requested them with `observation_end` only. That
+  // bounds which observation DATES come back; it does not bound what was KNOWN
+  // on the date being scored, so a backfill saw both today's revised figures and
+  // observations published weeks after the fact (an observation dated
+  // 2008-09-01 was not released until mid-October, yet passed an
+  // `obs.date <= 2008-09-02` filter six weeks early).
+  //
+  // Passing `observationDate` as the ALFRED as-of date makes FRED serve the
+  // vintage as it actually stood that day. Measured effect on the 2008 window:
+  // 28.0% Risk-Off point-in-time versus 60.6% latest-vintage. The live path
+  // (isValidation === false) is unchanged — "now" IS the current vintage.
+  const asOf = isValidation ? observationDate : undefined;
   const cpiObs = isValidation
     ? await compassFredClient.fetchSeriesByDateRange(
         compassFredClient.SERIES.CPI,
         addDays(observationDate, -CPI_DAYS),
         observationDate,
+        asOf,
       )
     : await compassFredClient.fetchSeries(compassFredClient.SERIES.CPI, CPI_DAYS);
   const gdpObs = isValidation
@@ -45,6 +60,7 @@ export async function ingestUsDataStackInput(
         compassFredClient.SERIES.GDP,
         addDays(observationDate, -GDP_DAYS),
         observationDate,
+        asOf,
       )
     : await compassFredClient.fetchSeries(compassFredClient.SERIES.GDP, GDP_DAYS);
   const payemsObs = isValidation
@@ -52,6 +68,7 @@ export async function ingestUsDataStackInput(
         compassFredClient.SERIES.NFP,
         addDays(observationDate, -NFP_DAYS),
         observationDate,
+        asOf,
       )
     : await compassFredClient.fetchSeries(compassFredClient.SERIES.NFP, NFP_DAYS);
   const unrateObs = isValidation
@@ -59,6 +76,7 @@ export async function ingestUsDataStackInput(
         compassFredClient.SERIES.UNRATE,
         addDays(observationDate, -UNRATE_DAYS),
         observationDate,
+        asOf,
       )
     : await compassFredClient.fetchSeries(compassFredClient.SERIES.UNRATE, UNRATE_DAYS);
 
@@ -123,6 +141,7 @@ export async function ingestUsDataStackInput(
       },
     },
     source: 'fred',
+    configVersionLabel: config.versionLabel,
     isValidation,
   });
 

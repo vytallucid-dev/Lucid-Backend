@@ -12,6 +12,12 @@ export const ManualDataEntrySchema = z.object({
   actual: z.number().finite(),
   forecast: z.number().finite().nullable().optional(),
   previous: z.number().finite().nullable().optional(),
+  // Central-bank target range, for the banks that announce one (the Fed).
+  // Optional and independent of `actual`: a bank publishing a single rate
+  // leaves both null, which is every bank except the Fed. See
+  // rateRangeFromMetadata for why this is not folded into `actual`.
+  rateRangeLower: z.number().finite().nullable().optional(),
+  rateRangeUpper: z.number().finite().nullable().optional(),
   notes: z.string().max(500).optional(),
   // Additive: when omitted the POST behaves exactly as before. Set true to
   // acknowledge a detected previous↔stored-actual mismatch and write anyway.
@@ -43,6 +49,8 @@ export async function manualDataEntryHandler(
       actual,
       forecast,
       previous,
+      rateRangeLower,
+      rateRangeUpper,
       notes,
       confirmRevision,
       variant,
@@ -79,6 +87,8 @@ export async function manualDataEntryHandler(
       actual,
       forecast: forecast ?? null,
       previous: previous ?? null,
+      rateRangeLower: rateRangeLower ?? null,
+      rateRangeUpper: rateRangeUpper ?? null,
       notes: notes ?? null,
       triggeredBy,
       confirmRevision,

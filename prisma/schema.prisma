@@ -299,9 +299,9 @@ model CalendarEvent {
   // CURRENCY code (CNY, AUD), not the ISO country code Indicator.country
   // stores (CN, AU) — they are deliberately not reconciled here so the key
   // stays a faithful record of what upstream sent.
-  source    String   @default("forex_factory") @db.VarChar(30)
-  country   String   @db.VarChar(8)
-  title     String   @db.VarChar(200)
+  source      String   @default("forex_factory") @db.VarChar(30)
+  country     String   @db.VarChar(8)
+  title       String   @db.VarChar(200)
   // The UTC INSTANT of the release. The feed sends ISO-8601 with a -04:00
   // offset; ingest converts to UTC and stores that. Never a local-time
   // string, and never a bare date — every observed event carries a real
@@ -310,7 +310,7 @@ model CalendarEvent {
   scheduledAt DateTime @map("scheduled_at")
 
   // ---- Payload -------------------------------------------------------
-  impact String @db.VarChar(16)
+  impact      String  @db.VarChar(16)
   // Stored UNCONDITIONALLY, including when `actual` is absent — an event
   // with no actual yet is a scheduled release, not a discardable row.
   //
@@ -354,8 +354,9 @@ model CalendarEvent {
 
   // indicatorId is nullable BY DESIGN — null IS the unmapped queue. The FK is
   // still declared so a non-null value can never point at a deleted indicator.
-  indicator Indicator?    @relation(fields: [indicatorId], references: [id], onDelete: SetNull)
-  fetchLog  DataFetchLog? @relation(fields: [fetchedVia], references: [id], onDelete: SetNull)
+  indicator Indicator?              @relation(fields: [indicatorId], references: [id], onDelete: SetNull)
+  fetchLog  DataFetchLog?           @relation(fields: [fetchedVia], references: [id], onDelete: SetNull)
+  deferrals CalendarEventDeferral[]
 
   // Re-fetching the same event UPDATES rather than duplicates. The feed is
   // pulled twice daily and every run re-sends the whole week, so this key is
@@ -372,7 +373,6 @@ model CalendarEvent {
   // queue is indicatorId IS NULL ordered by scheduledAt, which this same
   // index satisfies (Postgres indexes NULLs in a btree).
   @@index([indicatorId, scheduledAt(sort: Desc)])
-  deferrals CalendarEventDeferral[]
   @@map("calendar_events")
 }
 
@@ -406,12 +406,12 @@ model CalendarEventDeferral {
 
   // Required on EVERY row (both shapes) — a standing deferral has no
   // calendarEventId to derive it from, so it must be stored directly.
-  indicatorId String     @map("indicator_id")
-  indicator   Indicator  @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+  indicatorId   String    @map("indicator_id")
+  indicator     Indicator @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
   // Denormalised alongside indicatorId for the same reason CalendarEvent
   // denormalises indicatorCode: list/badge queries read it without a join.
-  indicatorCode String   @map("indicator_code") @db.VarChar(50)
-  variant       String?  @db.VarChar(20)
+  indicatorCode String    @map("indicator_code") @db.VarChar(50)
+  variant       String?   @db.VarChar(20)
 
   // Null = deferred indefinitely (B2). Non-null = deferred to a date; the
   // deferral itself expires and the event returns to overdue once
@@ -804,6 +804,16 @@ model CompassInput {
   isValidation    Boolean    @default(false) @map("is_validation")
   computedAt      DateTime   @default(now()) @map("computed_at")
 
+  // Phase C. configVersionLabel records WHICH compass_config produced this row —
+  // previously unrecoverable, so a row could not be attributed to its formulas.
+  // isTradingDay is false for any row the US market calendar says should not
+  // exist. researchTag labels replay output; it is NOT part of the unique key,
+  // because the ported replay keeps its input state in memory and reports
+  // per-input detail through the classification's voteBreakdown instead.
+  configVersionLabel String? @map("config_version_label") @db.VarChar(20)
+  researchTag        String? @map("research_tag") @db.VarChar(40)
+  isTradingDay       Boolean @default(true) @map("is_trading_day")
+
   @@unique([observationDate, inputCode, isValidation])
   @@index([observationDate(sort: Desc)])
   @@index([inputCode, observationDate(sort: Desc)])
@@ -846,14 +856,14 @@ model CompassClassification {
   //     because fedConstraint was FREE under a Risk-Off regime path.
   //   overridesActive = the POST-gate final override set that actually fired
   //     (JSON array of override codes) — self-explaining daily log.
-  us02yClose                     Decimal? @map("us02y_close") @db.Decimal(20, 6)
-  us02ySma21                     Decimal? @map("us02y_sma21") @db.Decimal(20, 6)
-  rateGateHawkish                Boolean  @default(false) @map("rate_gate_hawkish")
-  override3SuppressedByGate      Boolean  @default(false) @map("override_3_suppressed_by_gate")
-  override5SuppressedByGate      Boolean  @default(false) @map("override_5_suppressed_by_gate")
-  fedConstraint                  String   @default("") @map("fed_constraint") @db.VarChar(12)
-  override2SuppressedByConstraint Boolean @default(false) @map("override_2_suppressed_by_constraint")
-  overridesActive                Json?    @map("overrides_active")
+  us02yClose                      Decimal? @map("us02y_close") @db.Decimal(20, 6)
+  us02ySma21                      Decimal? @map("us02y_sma21") @db.Decimal(20, 6)
+  rateGateHawkish                 Boolean  @default(false) @map("rate_gate_hawkish")
+  override3SuppressedByGate       Boolean  @default(false) @map("override_3_suppressed_by_gate")
+  override5SuppressedByGate       Boolean  @default(false) @map("override_5_suppressed_by_gate")
+  fedConstraint                   String   @default("") @map("fed_constraint") @db.VarChar(12)
+  override2SuppressedByConstraint Boolean  @default(false) @map("override_2_suppressed_by_constraint")
+  overridesActive                 Json?    @map("overrides_active")
 
   totalGreenWeight  Decimal @map("total_green_weight") @db.Decimal(5, 2)
   totalYellowWeight Decimal @map("total_yellow_weight") @db.Decimal(5, 2)
@@ -863,11 +873,230 @@ model CompassClassification {
   isValidation  Boolean  @default(false) @map("is_validation")
   computedAt    DateTime @default(now()) @map("computed_at")
 
+  // Phase C — see CompassInput for the rationale. The unique key stays
+  // (classificationDate, vintageDate): replay rows get their own vintageDate, so
+  // researchTag is a label and a filter, not a uniqueness component.
+  configVersionLabel String? @map("config_version_label") @db.VarChar(20)
+  researchTag        String? @map("research_tag") @db.VarChar(40)
+  isTradingDay       Boolean @default(true) @map("is_trading_day")
+
   @@unique([classificationDate, vintageDate])
   @@index([classificationDate(sort: Desc)])
   @@index([classificationDate, isCurrent], map: "compass_classifications_date_current_idx")
   @@index([classificationDate, isValidation])
   @@map("compass_classifications")
+}
+
+/// Phase C layer-1 — one row per (date, module, reading).
+///
+/// THE POINT OF THIS TABLE is that a reading has TWO INDEPENDENT AXES:
+///
+///   the vote axis   (colorBand, isVoting, weight)
+///   the state axis  (stateLabel)
+///
+/// A voting input sets the first and leaves stateLabel null. A non-voting
+/// reading — a term-premium level, a hedged-yield pickup, a co-movement state —
+/// sets colorBand null, isVoting false, weight null, and may carry a stateLabel
+/// that describes the market without expressing an opinion about risk appetite.
+///
+/// Nothing in the vote path reads stateLabel; nothing in the state path reads
+/// colorBand. That separation is the whole design requirement: a future
+/// "repricing regime" reading (the 2022 case, where the Compass was structurally
+/// unable to register an orderly but severe repricing) is a new readingCode and
+/// a new layer-2 template, with NO migration and no change to scoring.
+///
+/// Provenance is mandatory, not optional: every reading records its source, the
+/// as-of date of the underlying observation, and whether that observation was
+/// fresh, forward-filled, stale or missing. The UI renders all three next to the
+/// number.
+///
+/// `explanation` is {templateId, params}, never rendered prose. Storing text
+/// would let a later template edit silently rewrite history; storing the inputs
+/// to a pure render function keeps the output reproducible.
+model CompassModuleReading {
+  id                 String   @id @default(uuid())
+  classificationDate DateTime @map("classification_date") @db.Date
+  /// YIELDS | VOL_CREDIT | ECON_DATA | DOLLAR_POSITIONING | POLICY_STANCE
+  moduleCode         String   @map("module_code") @db.VarChar(30)
+  /// e.g. R1_REAL_YIELD_SHOCK, ACM_TERM_PREMIUM, HEDGED_30Y_JPY_PICKUP
+  readingCode        String   @map("reading_code") @db.VarChar(40)
+
+  // --- vote axis (null for a non-voting reading) ---
+  colorBand String?  @map("color_band") @db.VarChar(10)
+  isVoting  Boolean  @default(false) @map("is_voting")
+  weight    Decimal? @db.Decimal(5, 2)
+
+  // --- state axis: a label that is NOT a vote ---
+  stateLabel String? @map("state_label") @db.VarChar(40)
+
+  // --- value ---
+  valueNumeric Decimal? @map("value_numeric") @db.Decimal(20, 6)
+  valueText    String?  @map("value_text") @db.VarChar(120)
+  unit         String?  @db.VarChar(16)
+
+  // --- provenance, required on every reading ---
+  /// e.g. FRED:DFII10, MOF:JGB10Y, BIS:CBPOL_JP, NYFED:ACM. Wide enough for a
+  /// composite reading to cite every series it is derived from — a partial
+  /// citation next to a rendered number is worse than none.
+  sourceCode     String    @map("source_code") @db.VarChar(80)
+  sourceAsOf     DateTime? @map("source_as_of") @db.Date
+  /// FRESH | FILLED | STALE | MISSING
+  stalenessState String    @map("staleness_state") @db.VarChar(12)
+  stalenessDays  Int?      @map("staleness_days")
+
+  /// { templateId, params } — never free text.
+  explanation Json?
+
+  configVersionLabel String?  @map("config_version_label") @db.VarChar(20)
+  /// NOT NULL with a '' default because it is part of the unique key above:
+  /// Postgres treats NULLs as distinct in a unique index, so a nullable column
+  /// would silently permit duplicate rows for the same date. '' means "live".
+  researchTag        String   @default("") @map("research_tag") @db.VarChar(40)
+  isValidation       Boolean  @default(false) @map("is_validation")
+  computedAt         DateTime @default(now()) @map("computed_at")
+
+  @@unique([classificationDate, moduleCode, readingCode, isValidation, researchTag])
+  @@index([classificationDate(sort: Desc), moduleCode])
+  @@index([readingCode, classificationDate(sort: Desc)])
+  @@map("compass_module_readings")
+}
+
+/// Phase C layer-1 — one row per (date, module): the module's own verdict.
+///
+/// verdictBand is NULLABLE on purpose. Policy Stance has no verdict — it is
+/// entirely descriptive — and forcing every module to invent a GREEN/YELLOW/RED
+/// would manufacture an opinion the evidence does not support. A module may
+/// instead (or additionally) carry a non-vote stateLabel.
+model CompassModuleState {
+  id                 String   @id @default(uuid())
+  classificationDate DateTime @map("classification_date") @db.Date
+  moduleCode         String   @map("module_code") @db.VarChar(30)
+  /// null for a module that does not vote
+  verdictBand        String?  @map("verdict_band") @db.VarChar(10)
+  stateLabel         String?  @map("state_label") @db.VarChar(40)
+  /// { templateId, params }
+  headline           Json
+  /// the readingCodes this state was built from — layer 2 traces through these
+  readingCodes       Json     @map("reading_codes")
+  configVersionLabel String?  @map("config_version_label") @db.VarChar(20)
+  /// NOT NULL with a '' default because it is part of the unique key above:
+  /// Postgres treats NULLs as distinct in a unique index, so a nullable column
+  /// would silently permit duplicate rows for the same date. '' means "live".
+  researchTag        String   @default("") @map("research_tag") @db.VarChar(40)
+  isValidation       Boolean  @default(false) @map("is_validation")
+  computedAt         DateTime @default(now()) @map("computed_at")
+
+  @@unique([classificationDate, moduleCode, isValidation, researchTag])
+  @@index([classificationDate(sort: Desc)])
+  @@map("compass_module_states")
+}
+
+/// Phase C layer-2 — the deterministic plain-language state description.
+///
+/// `sentences` is an ordered array of
+///   { templateId, params, text, traces: [{ moduleCode, readingCode }] }
+///
+/// EVERY sentence must carry at least one trace, and every trace must resolve to
+/// a CompassModuleReading present for the same date. A synthesis claim with no
+/// supporting module reading is a bug, and is caught by a test rather than
+/// rendered. `disagreements` is the same shape and exists because conflict
+/// between modules is information to be surfaced, not averaged away.
+model CompassSynthesis {
+  id                 String   @id @default(uuid())
+  classificationDate DateTime @map("classification_date") @db.Date
+  sentences          Json
+  disagreements      Json
+  configVersionLabel String?  @map("config_version_label") @db.VarChar(20)
+  /// NOT NULL with a '' default because it is part of the unique key above:
+  /// Postgres treats NULLs as distinct in a unique index, so a nullable column
+  /// would silently permit duplicate rows for the same date. '' means "live".
+  researchTag        String   @default("") @map("research_tag") @db.VarChar(40)
+  isValidation       Boolean  @default(false) @map("is_validation")
+  computedAt         DateTime @default(now()) @map("computed_at")
+
+  @@unique([classificationDate, isValidation, researchTag])
+  @@index([classificationDate(sort: Desc)])
+  @@map("compass_synthesis")
+}
+
+/// Phase C archive — a faithful snapshot of the pre-Phase-C live Compass series.
+///
+/// The live classification history accumulated between 2026-05-18 and 2026-09-08
+/// was abandoned rather than repaired: it straddles the v1 -> v2 config cutover
+/// mid-series, 28 of its 104 classification rows are weekends and at least three
+/// more are US market holidays (all of which advanced the persistence counter on
+/// no new information), all 46 pre-cutover DXY_TREND rows are on the wrong scale,
+/// and final_regime is empty on the 45 pre-Phase-4 rows.
+///
+/// These rows are the evidence behind the Phase B findings and the record of what
+/// the deployed system was actually doing, so they are MOVED here rather than
+/// deleted, and stay queryable. They deliberately mirror the OLD schema: the
+/// Phase C columns (config_version_label, research_tag, is_trading_day) are added
+/// to the live tables only, after this archive is taken.
+///
+/// See SYSTEM_REFERENCE.md "Known data incidents".
+model CompassClassificationArchive {
+  id                 String   @id
+  classificationDate DateTime @map("classification_date") @db.Date
+  vintageDate        DateTime @map("vintage_date")
+  isCurrent          Boolean  @map("is_current")
+
+  candidateRegime      String  @map("candidate_regime") @db.VarChar(15)
+  activeRegime         String  @map("active_regime") @db.VarChar(15)
+  persistenceDaysCount Int     @map("persistence_days_count")
+  crisisOverrideFired  Boolean @map("crisis_override_fired")
+
+  finalRegime  String  @map("final_regime") @db.VarChar(15)
+  shockAActive Boolean @map("shock_a_active")
+  shockBActive Boolean @map("shock_b_active")
+
+  us02yClose                      Decimal? @map("us02y_close") @db.Decimal(20, 6)
+  us02ySma21                      Decimal? @map("us02y_sma21") @db.Decimal(20, 6)
+  rateGateHawkish                 Boolean  @map("rate_gate_hawkish")
+  override3SuppressedByGate       Boolean  @map("override_3_suppressed_by_gate")
+  override5SuppressedByGate       Boolean  @map("override_5_suppressed_by_gate")
+  fedConstraint                   String   @map("fed_constraint") @db.VarChar(12)
+  override2SuppressedByConstraint Boolean  @map("override_2_suppressed_by_constraint")
+  overridesActive                 Json?    @map("overrides_active")
+
+  totalGreenWeight  Decimal @map("total_green_weight") @db.Decimal(5, 2)
+  totalYellowWeight Decimal @map("total_yellow_weight") @db.Decimal(5, 2)
+  totalRedWeight    Decimal @map("total_red_weight") @db.Decimal(5, 2)
+
+  voteBreakdown Json     @map("vote_breakdown")
+  isValidation  Boolean  @map("is_validation")
+  computedAt    DateTime @map("computed_at")
+
+  /// When this row was moved out of compass_classifications.
+  archivedAt    DateTime @default(now()) @map("archived_at")
+  /// Why the series was abandoned. One value for the whole batch.
+  archiveReason String   @map("archive_reason")
+
+  @@index([classificationDate(sort: Desc)])
+  @@map("compass_classifications_archive")
+}
+
+/// Phase C archive — see CompassClassificationArchive. `source` is a plain
+/// String here rather than the DataSource enum so the archive stays readable if
+/// that shared enum ever changes.
+model CompassInputArchive {
+  id              String   @id
+  observationDate DateTime @map("observation_date") @db.Date
+  inputCode       String   @map("input_code") @db.VarChar(30)
+  rawValue        Decimal? @map("raw_value") @db.Decimal(20, 6)
+  derivedValue    Decimal? @map("derived_value") @db.Decimal(20, 6)
+  colorBand       String   @map("color_band") @db.VarChar(10)
+  subChecks       Json?    @map("sub_checks")
+  source          String   @db.VarChar(30)
+  isValidation    Boolean  @map("is_validation")
+  computedAt      DateTime @map("computed_at")
+
+  archivedAt    DateTime @default(now()) @map("archived_at")
+  archiveReason String   @map("archive_reason")
+
+  @@index([observationDate(sort: Desc)])
+  @@index([inputCode, observationDate(sort: Desc)])
+  @@map("compass_inputs_archive")
 }
 
 model CompassValidationReport {
@@ -882,14 +1111,14 @@ model CompassValidationReport {
 }
 
 model CompassConfig {
-  id             String    @id @default(uuid())
-  versionLabel   String    @map("version_label") @db.VarChar(20)
-  configDefinition Json    @map("config_definition")
-  effectiveFrom  DateTime  @map("effective_from") @db.Date
-  effectiveTo    DateTime? @map("effective_to") @db.Date
-  notes          String?
-  createdAt      DateTime  @default(now()) @map("created_at")
-  createdBy      String?   @map("created_by")
+  id               String    @id @default(uuid())
+  versionLabel     String    @map("version_label") @db.VarChar(20)
+  configDefinition Json      @map("config_definition")
+  effectiveFrom    DateTime  @map("effective_from") @db.Date
+  effectiveTo      DateTime? @map("effective_to") @db.Date
+  notes            String?
+  createdAt        DateTime  @default(now()) @map("created_at")
+  createdBy        String?   @map("created_by")
 
   @@unique([versionLabel])
   @@index([effectiveFrom])
@@ -906,14 +1135,21 @@ model CompassConfig {
  * observation date the cached scan was last refreshed for.
  */
 model CompassCurveState {
-  id                String   @id @default(uuid())
-  isValidation      Boolean  @default(false) @map("is_validation")
-  computedForDate   DateTime @map("computed_for_date") @db.Date
-  inversionStart    DateTime? @map("inversion_start") @db.Date
-  unInversionDate   DateTime? @map("un_inversion_date") @db.Date
-  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+  id              String    @id @default(uuid())
+  isValidation    Boolean   @default(false) @map("is_validation")
+  computedForDate DateTime  @map("computed_for_date") @db.Date
+  inversionStart  DateTime? @map("inversion_start") @db.Date
+  unInversionDate DateTime? @map("un_inversion_date") @db.Date
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  @@unique([isValidation])
+  // Phase C. This cache was a singleton keyed on isValidation alone, so a replay
+  // run would overwrite live state. researchTag widens the key. It is NOT NULL
+  // with a '' default on purpose: Postgres treats NULLs as distinct in a unique
+  // index, so a nullable column would silently allow duplicate live rows and
+  // destroy the singleton guarantee this table depends on. '' means "live".
+  researchTag String @default("") @map("research_tag") @db.VarChar(40)
+
+  @@unique([isValidation, researchTag])
   @@map("compass_curve_state")
 }
 
@@ -936,7 +1172,10 @@ model CompassShockState {
   shockBExpiry    DateTime? @map("shock_b_expiry") @db.Date
   updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  @@unique([isValidation])
+  // Phase C — see CompassCurveState for why this is NOT NULL with a '' default.
+  researchTag String @default("") @map("research_tag") @db.VarChar(40)
+
+  @@unique([isValidation, researchTag])
   @@map("compass_shock_state")
 }
 
@@ -985,21 +1224,21 @@ model TradingAccount {
 // account the idea was taken in. Edge is a property of the setup; P&L is a
 // property of the account.
 model Trade {
-  id               String   @id @default(uuid())
-  userId           String   @map("user_id") @db.Uuid
-  model            String   @db.VarChar(60)
-  pair             String   @db.VarChar(20)
-  direction        String   @db.VarChar(8) // Buy | Sell
-  plannedEntry     Decimal  @map("planned_entry") @db.Decimal(20, 6)
-  plannedSl        Decimal  @map("planned_sl") @db.Decimal(20, 6)
-  plannedFirstTp   Decimal? @map("planned_first_tp") @db.Decimal(20, 6)
-  plannedMainTp    Decimal  @map("planned_main_tp") @db.Decimal(20, 6)
-  conviction       String   @db.VarChar(10) // Low | Medium | High
-  dateOpened       DateTime @map("date_opened")
-  session          String   @db.VarChar(24)
-  screenshots      String[]
-  psychology       String?  @db.VarChar(120)
-  notes            String?
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id") @db.Uuid
+  model          String   @db.VarChar(60)
+  pair           String   @db.VarChar(20)
+  direction      String   @db.VarChar(8) // Buy | Sell
+  plannedEntry   Decimal  @map("planned_entry") @db.Decimal(20, 6)
+  plannedSl      Decimal  @map("planned_sl") @db.Decimal(20, 6)
+  plannedFirstTp Decimal? @map("planned_first_tp") @db.Decimal(20, 6)
+  plannedMainTp  Decimal  @map("planned_main_tp") @db.Decimal(20, 6)
+  conviction     String   @db.VarChar(10) // Low | Medium | High
+  dateOpened     DateTime @map("date_opened")
+  session        String   @db.VarChar(24)
+  screenshots    String[]
+  psychology     String?  @db.VarChar(120)
+  notes          String?
 
   // The Oracle score for this pair AS OF the entry date, captured once at
   // write time and never recomputed. Replaces the old `fundamental_score`,
@@ -1024,8 +1263,8 @@ model Trade {
   oracleScoreEntryCapturedAt DateTime? @map("oracle_score_entry_captured_at")
   oracleScoreEntrySource     String?   @map("oracle_score_entry_source") @db.VarChar(10)
 
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   executions Execution[]
 
@@ -1066,8 +1305,8 @@ model Execution {
   oracleScoreExitDate       DateTime? @map("oracle_score_exit_date") @db.Date
   oracleScoreExitCapturedAt DateTime? @map("oracle_score_exit_captured_at")
 
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   trade   Trade          @relation(fields: [tradeId], references: [id], onDelete: Cascade)
   account TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)

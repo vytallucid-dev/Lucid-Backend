@@ -61,6 +61,7 @@ export async function ingestVixInput(
         neededObservationCount: AVG_LOOKBACK_OBS,
       },
       source: 'eodhd',
+      configVersionLabel: config.versionLabel,
       isValidation,
     });
     logger.warn(
@@ -84,6 +85,7 @@ export async function ingestVixInput(
         latestRealDate: clean.latestRealDate?.toISOString().slice(0, 10) ?? null,
       },
       source: 'eodhd',
+      configVersionLabel: config.versionLabel,
       isValidation,
     });
     logger.warn(
@@ -116,6 +118,7 @@ export async function ingestVixInput(
       stale: false,
     },
     source: 'eodhd',
+    configVersionLabel: config.versionLabel,
     isValidation,
   });
 

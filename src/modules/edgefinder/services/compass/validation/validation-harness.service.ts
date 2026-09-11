@@ -1,201 +1,174 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@core/db/prisma';
 import { logger } from '@core/utils/logger';
+import { compassConfigRepository } from '@core/repositories/compass-config.repository';
 import {
-  VALIDATION_WINDOWS,
-  type ValidationWindowConfig,
-} from './validation-windows.config';
+  runValidationSuite,
+  REPORT_KIND,
+  type ValidationReportV2,
+} from './replay/replay-harness.service';
 
 export type Regime = 'Risk-On' | 'Caution' | 'Risk-Off';
 
+/**
+ * Compass validation.
+ *
+ * WHAT CHANGED IN PHASE C
+ * -----------------------
+ * This used to READ `compass_classifications WHERE isValidation = true` and
+ * compare regimes. It had never returned a non-zero result and could not: the
+ * only path that could populate those rows ran the live input services day by
+ * day, and the live HY OAS service throws whenever FRED returns nothing — which
+ * it does for every date before 2023-09-11 — so the backfill skipped the
+ * classifier for every historical day and wrote no rows at all. Independently,
+ * EODHD serves twelve months of history under a call cap shared with NIFTY.
+ *
+ * It now RUNS the replay (see replay/replay-harness.service.ts), which drives the
+ * shipped pure scoring modules over historical data fetched from FRED and Yahoo,
+ * with point-in-time ALFRED vintages for the four revised macro series.
+ *
+ * Three defects fixed along the way, each of which made the previous output
+ * meaningless rather than merely inaccurate:
+ *   - it read `activeRegime`, which the Shock Layer deliberately never writes;
+ *   - `requiresCrisisOverride` was structurally unsatisfiable after Phase 4;
+ *   - four of the eight specified windows did not exist, and one of the four
+ *     that did measured duration where the architecture produces a spike.
+ */
+
+/** Legacy shape, retained so old rows in the JSONB column still parse. */
 export interface WindowValidationResult {
   windowName: string;
   passed: boolean;
-
   totalTradingDays: number;
   riskOffDays: number;
   cautionDays: number;
   riskOnDays: number;
   riskOffPercent: number;
-
   crisisOverrideFiredOnPeak: boolean | null;
   peakDateClassification: Regime | null;
-
   falseRiskOnDates: string[];
-
   failures: string[];
 }
 
 export interface ValidationReport {
   id?: string;
   generatedAt: Date;
-  windowResults: WindowValidationResult[];
   overallPassed: boolean;
   overallSummary: string;
+  /** The Phase C report. */
+  report: ValidationReportV2;
 }
 
-function ymd(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-function buildSummary(windowResults: WindowValidationResult[]): string {
-  const passed = windowResults.filter((w) => w.passed).length;
-  const failed = windowResults.filter((w) => !w.passed);
-  if (failed.length === 0) {
-    return `All ${passed}/${windowResults.length} validation windows passed.`;
-  }
-  const failureDetails = failed
-    .map((w) => `${w.windowName}: ${w.failures.join('; ')}`)
-    .join(' | ');
-  return `${passed}/${windowResults.length} passed. Failures: ${failureDetails}`;
-}
-
-async function evaluateWindow(
-  config: ValidationWindowConfig,
-): Promise<WindowValidationResult> {
-  const rows = await prisma.compassClassification.findMany({
-    where: {
-      isValidation: true,
-      isCurrent: true,
-      classificationDate: {
-        gte: config.startDate,
-        lte: config.endDate,
-      },
-    },
-    select: {
-      classificationDate: true,
-      activeRegime: true,
-      crisisOverrideFired: true,
-    },
-    orderBy: { classificationDate: 'asc' },
-  });
-
-  const totalTradingDays = rows.length;
-  let riskOffDays = 0;
-  let cautionDays = 0;
-  let riskOnDays = 0;
-
-  for (const row of rows) {
-    if (row.activeRegime === 'Risk-Off') riskOffDays += 1;
-    else if (row.activeRegime === 'Caution') cautionDays += 1;
-    else if (row.activeRegime === 'Risk-On') riskOnDays += 1;
-  }
-
-  const riskOffPercent =
-    totalTradingDays === 0 ? 0 : (riskOffDays / totalTradingDays) * 100;
-
-  const peakRow = rows.find(
-    (r) => r.classificationDate.getTime() === config.peakDate.getTime(),
-  );
-  const crisisOverrideFiredOnPeak = peakRow ? peakRow.crisisOverrideFired : null;
-  const peakDateClassification = (peakRow?.activeRegime as Regime | undefined) ?? null;
-
-  const falseRiskOnDates: string[] = [];
-  const coreStart = config.crisisCore.start.getTime();
-  const coreEnd = config.crisisCore.end.getTime();
-  for (const row of rows) {
-    const t = row.classificationDate.getTime();
-    if (t >= coreStart && t <= coreEnd && row.activeRegime === 'Risk-On') {
-      falseRiskOnDates.push(ymd(row.classificationDate));
-    }
-  }
-
-  const failures: string[] = [];
-
-  if (totalTradingDays === 0) {
-    failures.push('no classifications found in window — backfill incomplete?');
-  }
-
-  if (riskOffPercent < config.minRiskOffPercent) {
-    failures.push(
-      `Risk-Off ${riskOffPercent.toFixed(1)}% below threshold ${config.minRiskOffPercent}%`,
-    );
-  }
-
-  if (config.requiresCrisisOverride) {
-    if (crisisOverrideFiredOnPeak === null) {
-      failures.push(`no classification found for peak date ${ymd(config.peakDate)}`);
-    } else if (crisisOverrideFiredOnPeak === false) {
-      failures.push(
-        `crisis override did not fire on peak date ${ymd(config.peakDate)}`,
-      );
-    }
-  }
-
-  if (falseRiskOnDates.length > 0) {
-    failures.push(
-      `${falseRiskOnDates.length} false Risk-On classification(s) in crisis core`,
-    );
-  }
-
-  return {
-    windowName: config.windowName,
-    passed: failures.length === 0,
-    totalTradingDays,
-    riskOffDays,
-    cautionDays,
-    riskOnDays,
-    riskOffPercent,
-    crisisOverrideFiredOnPeak,
-    peakDateClassification,
-    falseRiskOnDates,
-    failures,
-  };
+export interface RunValidationOptions {
+  /** 'live' reproduces the pre-Phase-C look-ahead, for measuring it. Default 'pit'. */
+  macroMode?: 'pit' | 'live';
+  only?: string[];
+  /** Skip the database write (used by the report scripts). */
+  persist?: boolean;
 }
 
 /**
- * Run validation against all 4 historical windows. Reads classifications
- * where isValidation=true and compares to expected regime behavior.
+ * Run all eight validation windows and persist the report.
  *
- * Does NOT trigger any data fetches — assumes backfill is complete.
- * Persists the report to compass_validation_reports.
+ * Takes several minutes: it fetches ~9 full-history series plus 4 ALFRED vintage
+ * tables, then replays every window under every applicable HY OAS bracket.
  */
-export async function runValidation(): Promise<ValidationReport> {
-  const windowResults: WindowValidationResult[] = [];
-  for (const cfg of VALIDATION_WINDOWS) {
-    windowResults.push(await evaluateWindow(cfg));
-  }
-
-  const overallPassed = windowResults.every((w) => w.passed);
-  const overallSummary = buildSummary(windowResults);
-  const generatedAt = new Date();
-
-  const stored = await prisma.compassValidationReport.create({
-    data: {
-      generatedAt,
-      overallPassed,
-      windowResults: windowResults as unknown as Prisma.InputJsonValue,
-      summary: overallSummary,
-    },
+export async function runValidation(
+  options: RunValidationOptions = {},
+): Promise<ValidationReport> {
+  const config = await compassConfigRepository.resolveForDate(new Date());
+  const report = await runValidationSuite({
+    config,
+    macroMode: options.macroMode ?? 'pit',
+    only: options.only,
   });
 
+  const generatedAt = new Date();
+  let id: string | undefined;
+
+  if (options.persist !== false) {
+    const stored = await prisma.compassValidationReport.create({
+      data: {
+        generatedAt,
+        overallPassed: report.overallPassed,
+        windowResults: report as unknown as Prisma.InputJsonValue,
+        summary: report.summary,
+      },
+    });
+    id = stored.id;
+  }
+
   logger.info(
-    { id: stored.id, overallPassed, overallSummary },
+    {
+      id,
+      passed: report.passedCount,
+      of: report.windowCount,
+      macroMode: report.macroMode,
+      configVersionLabel: report.configVersionLabel,
+    },
     'Compass validation report generated',
   );
 
   return {
-    id: stored.id,
-    generatedAt: stored.generatedAt,
-    windowResults,
-    overallPassed,
-    overallSummary,
+    id,
+    generatedAt,
+    overallPassed: report.overallPassed,
+    overallSummary: report.summary,
+    report,
   };
 }
 
 /**
- * Get the most recent persisted validation report, or null if none exist.
+ * Most recent persisted report.
+ *
+ * The JSONB column holds two incompatible shapes: this Phase C report and, from
+ * earlier runs, both the legacy 4-window array and a 40-row research export. The
+ * `reportKind` discriminator distinguishes them; anything without it is returned
+ * as `legacy` rather than being mis-typed as current, which is what the previous
+ * unchecked double-cast did.
  */
-export async function getMostRecentReport(): Promise<ValidationReport | null> {
+export async function getMostRecentReport(): Promise<
+  | { kind: 'phase-c'; id: string; generatedAt: Date; report: ValidationReportV2 }
+  | { kind: 'legacy'; id: string; generatedAt: Date; raw: unknown }
+  | null
+> {
   const row = await prisma.compassValidationReport.findFirst({
     orderBy: { generatedAt: 'desc' },
   });
   if (!row) return null;
-  return {
-    id: row.id,
-    generatedAt: row.generatedAt,
-    windowResults: row.windowResults as unknown as WindowValidationResult[],
-    overallPassed: row.overallPassed,
-    overallSummary: row.summary,
-  };
+
+  const raw = row.windowResults as unknown;
+  const isPhaseC =
+    typeof raw === 'object' &&
+    raw !== null &&
+    (raw as { reportKind?: unknown }).reportKind === REPORT_KIND;
+
+  if (isPhaseC) {
+    return {
+      kind: 'phase-c',
+      id: row.id,
+      generatedAt: row.generatedAt,
+      report: raw as ValidationReportV2,
+    };
+  }
+  return { kind: 'legacy', id: row.id, generatedAt: row.generatedAt, raw };
+}
+
+/** Most recent Phase C report specifically, skipping any legacy rows. */
+export async function getMostRecentPhaseCReport(): Promise<ValidationReportV2 | null> {
+  const rows = await prisma.compassValidationReport.findMany({
+    orderBy: { generatedAt: 'desc' },
+    take: 20,
+  });
+  for (const row of rows) {
+    const raw = row.windowResults as unknown;
+    if (
+      typeof raw === 'object' &&
+      raw !== null &&
+      (raw as { reportKind?: unknown }).reportKind === REPORT_KIND
+    ) {
+      return raw as ValidationReportV2;
+    }
+  }
+  return null;
 }

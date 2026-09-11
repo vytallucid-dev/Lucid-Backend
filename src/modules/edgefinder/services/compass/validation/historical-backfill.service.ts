@@ -1,16 +1,9 @@
 import { logger } from '@core/utils/logger';
+import { generateTradingDays } from '@core/utils/us-market-calendar';
 import { dataFetchLogRepository } from '@core/repositories/data-fetch-log.repository';
 import { compassConfigRepository } from '@core/repositories/compass-config.repository';
-import { ingestVixInput } from '../inputs/vix-input.service';
-import { ingestHyOasInput } from '../inputs/hy-oas-input.service';
-import { ingestYieldCurveInput } from '../inputs/yield-curve-input.service';
-import { ingestDxyTrendInput } from '../inputs/dxy-trend-input.service';
-import { ingestVixTermStructureInput } from '../inputs/vix-term-structure-input.service';
-import { ingestUsDataStackInput } from '../inputs/us-data-stack-input.service';
-import { ingestUsdJpyPriceInput } from '../inputs/usdjpy-price-input.service';
-import { ingestUs02yCloseInput } from '../inputs/us02y-close-input.service';
 import { runCompassClassifier } from '../compass-classifier.service';
-import type { CompassConfigDefinition } from '../compass-config.types';
+import { orderedCompassInputs } from '../compass-input-registry';
 
 const JOB_NAME = 'compass_validation_backfill';
 
@@ -41,51 +34,24 @@ export interface BackfillResult {
   durationMs: number;
 }
 
-type IngestFn = (
-  observationDate: Date,
-  config: CompassConfigDefinition,
-  isValidation?: boolean,
-) => Promise<void>;
-
-// US_DATA_STACK runs in its own phase BEFORE the rest: the curve input
-// (Phase 2B) reads US_DATA_STACK's persisted Jobs sub-check for the same
-// observation date, so its compass_inputs row must already exist before
-// YIELD_2S10S runs. The remaining 4 independent inputs still run in
-// parallel with each other.
-const US_DATA_STACK_FN: { code: string; fn: IngestFn } = {
-  code: 'US_DATA_STACK',
-  fn: ingestUsDataStackInput,
-};
-
-const REMAINING_INPUT_FNS: Array<{ code: string; fn: IngestFn }> = [
-  { code: 'VIX_5D_AVG', fn: ingestVixInput },
-  { code: 'HY_OAS', fn: ingestHyOasInput },
-  { code: 'DXY_TREND', fn: ingestDxyTrendInput },
-  { code: 'VIX_TERM_STRUCTURE', fn: ingestVixTermStructureInput },
-  { code: 'YIELD_2S10S', fn: ingestYieldCurveInput },
-  { code: 'USDJPY_PRICE', fn: (date, _config, isValidation) => ingestUsdJpyPriceInput(date, isValidation) },
-  { code: 'US02Y_CLOSE', fn: (date, _config, isValidation) => ingestUs02yCloseInput(date, isValidation) },
-];
-
-const INPUT_FNS: Array<{ code: string; fn: IngestFn }> = [US_DATA_STACK_FN, ...REMAINING_INPUT_FNS];
-
 /**
- * Generate trading days (Mon-Fri) between start and end inclusive, ascending.
- * Holidays are best-effort skipped via downstream data availability rather
- * than a holiday calendar.
+ * Trading days between start and end inclusive, ascending.
+ *
+ * Phase C: this was a weekday-only filter whose own comment conceded that
+ * "holidays are best-effort skipped via downstream data availability rather
+ * than a holiday calendar". They were not skipped: Phase C Stage 0 confirmed
+ * the live classifier wrote full classifications on Juneteenth 2026,
+ * 3 July 2026 and Labor Day 2026, because the Phase 5 forward-fill makes all
+ * six inputs look present on a closed market.
+ *
+ * The real calendar now lives in `@core/utils/us-market-calendar` (rule-derived
+ * NYSE/SIFMA holidays plus an explicit list of unscheduled closures). This
+ * export is kept as a re-export so the five input services and the classifier
+ * that import it from here keep working unchanged; new code should import from
+ * the util directly. Production code importing from a `validation/` folder was
+ * always a wart — this is the first half of unwinding it.
  */
-export function generateTradingDays(start: Date, end: Date): Date[] {
-  const out: Date[] = [];
-  const cursor = new Date(start);
-  while (cursor.getTime() <= end.getTime()) {
-    const dow = cursor.getUTCDay();
-    if (dow !== 0 && dow !== 6) {
-      out.push(new Date(cursor));
-    }
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return out;
-}
+export { generateTradingDays };
 
 /**
  * Backfill all 6 Compass inputs for a date range and run the classifier for
@@ -134,17 +100,22 @@ export async function backfillWindow(
 
     const dayConfig = await compassConfigRepository.resolveForDate(day);
 
-    // US_DATA_STACK must settle before the rest run, since YIELD_2S10S reads
-    // its persisted Jobs sub-check for the same day (see INPUT_FNS comment
-    // above). The remaining 4 inputs are still independent of each other.
-    const usDataStackResult = await Promise.allSettled([US_DATA_STACK_FN.fn(day, dayConfig, true)]);
-    const remainingResults = await Promise.allSettled(
-      REMAINING_INPUT_FNS.map((d) => d.fn(day, dayConfig, true)),
-    );
-    const inputResults = [...usDataStackResult, ...remainingResults];
+    // Phase C: run in the registry's resolved dependency order, strictly
+    // sequentially. Previously this ran US_DATA_STACK first and then the rest in
+    // parallel, and attributed failures by zipping the settled results against a
+    // DIFFERENTLY-ordered list — which happened to line up, but only by luck.
+    // Sequential execution costs a little latency on a backfill and removes both
+    // the ordering hazard and the mis-attribution.
+    const descriptors = orderedCompassInputs();
+    const inputResults: PromiseSettledResult<void>[] = [];
+    for (const d of descriptors) {
+      inputResults.push(
+        await Promise.allSettled([d.fn(day, dayConfig, true)]).then((r) => r[0]),
+      );
+    }
 
     const failed = inputResults
-      .map((r, i) => ({ result: r, code: INPUT_FNS[i].code }))
+      .map((r, i) => ({ result: r, code: descriptors[i].code }))
       .filter((x) => x.result.status === 'rejected');
 
     const succeededCount = inputResults.length - failed.length;

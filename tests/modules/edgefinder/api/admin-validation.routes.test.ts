@@ -61,6 +61,7 @@ vi.mock(
 
 import express from 'express';
 import request from 'supertest';
+import { orderedCompassInputs } from '@modules/edgefinder/services/compass/compass-input-registry';
 import { prisma } from '@core/db/prisma';
 import { requireAuth, requireRole } from '@core/middleware/supabase-auth.middleware';
 import { errorHandler } from '@core/middleware/error-handler';
@@ -87,10 +88,6 @@ function makeApp(): express.Express {
 
 const app = makeApp();
 const mockedCompassInput = prisma.compassInput as unknown as Record<
-  string,
-  ReturnType<typeof vi.fn>
->;
-const mockedReport = prisma.compassValidationReport as unknown as Record<
   string,
   ReturnType<typeof vi.fn>
 >;
@@ -217,7 +214,10 @@ describe('GET /api/admin/compass/validation/status', () => {
   });
 
   it('reports in_progress when some inputs exist but not all', async () => {
-    mockedCompassInput.count.mockResolvedValue(6); // exactly 1 day of inputs
+    // One full day of inputs. Phase C: this was hardcoded to 6, the same stale
+    // constant as the /status bug it was meant to cover, so the test passed while
+    // the endpoint could never report `completed`. Now derived from the registry.
+    mockedCompassInput.count.mockResolvedValue(orderedCompassInputs().length);
     mockedCompassInput.findFirst.mockResolvedValue({ computedAt: new Date('2026-01-01') });
 
     const res = await request(app)

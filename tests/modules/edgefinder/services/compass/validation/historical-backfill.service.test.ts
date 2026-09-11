@@ -27,6 +27,9 @@ vi.mock('@modules/edgefinder/services/compass/inputs/us-data-stack-input.service
 vi.mock('@modules/edgefinder/services/compass/inputs/usdjpy-price-input.service', () => ({
   ingestUsdJpyPriceInput: vi.fn(),
 }));
+vi.mock('@modules/edgefinder/services/compass/inputs/real-yield-shock-input.service', () => ({
+  ingestRealYieldShockInput: vi.fn(),
+}));
 vi.mock('@modules/edgefinder/services/compass/inputs/us02y-close-input.service', () => ({
   ingestUs02yCloseInput: vi.fn(),
 }));
@@ -49,6 +52,7 @@ import { ingestDxyTrendInput } from '@modules/edgefinder/services/compass/inputs
 import { ingestVixTermStructureInput } from '@modules/edgefinder/services/compass/inputs/vix-term-structure-input.service';
 import { ingestUsDataStackInput } from '@modules/edgefinder/services/compass/inputs/us-data-stack-input.service';
 import { ingestUsdJpyPriceInput } from '@modules/edgefinder/services/compass/inputs/usdjpy-price-input.service';
+import { ingestRealYieldShockInput } from '@modules/edgefinder/services/compass/inputs/real-yield-shock-input.service';
 import { ingestUs02yCloseInput } from '@modules/edgefinder/services/compass/inputs/us02y-close-input.service';
 import { runCompassClassifier } from '@modules/edgefinder/services/compass/compass-classifier.service';
 import {
@@ -66,6 +70,7 @@ const mockedCorr = ingestVixTermStructureInput as unknown as ReturnType<typeof v
 const mockedStack = ingestUsDataStackInput as unknown as ReturnType<typeof vi.fn>;
 const mockedJpy = ingestUsdJpyPriceInput as unknown as ReturnType<typeof vi.fn>;
 const mockedUs02y = ingestUs02yCloseInput as unknown as ReturnType<typeof vi.fn>;
+const mockedR1 = ingestRealYieldShockInput as unknown as ReturnType<typeof vi.fn>;
 const mockedClassifier = runCompassClassifier as unknown as ReturnType<typeof vi.fn>;
 const mockedResolveConfig =
   compassConfigRepository.resolveForDate as unknown as ReturnType<typeof vi.fn>;
@@ -133,7 +138,7 @@ describe('backfillWindow', () => {
     endDate: utc(2020, 3, 18), // Wed → 3 trading days
   };
 
-  it('calls each of 8 input services with each trading day and isValidation=true', async () => {
+  it('calls each of 9 input services with each trading day and isValidation=true', async () => {
     const result = await backfillWindow(tinyWindow, 'admin-user');
     expect(result.totalTradingDays).toBe(3);
 
@@ -206,36 +211,51 @@ describe('backfillWindow', () => {
     expect(mockedComplete.mock.calls[0][0].status).toBe('success');
   });
 
-  it('runs US_DATA_STACK before the other 7, which run in parallel with each other', async () => {
-    const startTimes: Record<string, number> = {};
-    const slowMock = (code: string) =>
+  it('runs every input in dependency order, strictly sequentially', async () => {
+    // Phase C replaced "US_DATA_STACK first, then the rest in parallel" with a
+    // sequential run in the registry's resolved order. Two reasons:
+    //
+    //   1. YIELD_2S10S now has TWO dependencies whose rows must already exist —
+    //      US_DATA_STACK (its jobs sub-check) and REAL_YIELD_SHOCK (the band the
+    //      GREEN clause is gated on). Encoding that as "one special case first,
+    //      everything else in parallel" does not generalise.
+    //   2. The old failure attribution zipped settled results against a
+    //      differently-ordered list. It happened to line up; it was luck.
+    //
+    // Sequential execution costs a little latency on a backfill only, and buys a
+    // guarantee instead of a coincidence.
+    const order: string[] = [];
+    const finished: string[] = [];
+    const trackingMock = (code: string) =>
       async (): Promise<void> => {
-        startTimes[code] = Date.now();
-        await new Promise((r) => setTimeout(r, 20));
+        order.push(code);
+        await new Promise((r) => setTimeout(r, 5));
+        finished.push(code);
       };
-    mockedVix.mockImplementation(slowMock('VIX'));
-    mockedHy.mockImplementation(slowMock('HY'));
-    mockedYc.mockImplementation(slowMock('YC'));
-    mockedDxy.mockImplementation(slowMock('DXY'));
-    mockedCorr.mockImplementation(slowMock('CORR'));
-    mockedStack.mockImplementation(slowMock('STACK'));
-    mockedJpy.mockImplementation(slowMock('JPY'));
-    mockedUs02y.mockImplementation(slowMock('US02Y'));
+    mockedVix.mockImplementation(trackingMock('VIX_5D_AVG'));
+    mockedHy.mockImplementation(trackingMock('HY_OAS'));
+    mockedYc.mockImplementation(trackingMock('YIELD_2S10S'));
+    mockedDxy.mockImplementation(trackingMock('DXY_TREND'));
+    mockedCorr.mockImplementation(trackingMock('VIX_TERM_STRUCTURE'));
+    mockedStack.mockImplementation(trackingMock('US_DATA_STACK'));
+    mockedJpy.mockImplementation(trackingMock('USDJPY_PRICE'));
+    mockedUs02y.mockImplementation(trackingMock('US02Y_CLOSE'));
+    mockedR1.mockImplementation(trackingMock('REAL_YIELD_SHOCK'));
 
     const singleDay = { ...tinyWindow, endDate: tinyWindow.startDate };
     await backfillWindow(singleDay);
 
-    // The other 5 (excluding US_DATA_STACK) started within 10ms of each other = parallel
-    const { STACK: stackStart, ...rest } = startTimes;
-    const restValues = Object.values(rest);
-    const min = Math.min(...restValues);
-    const max = Math.max(...restValues);
-    expect(max - min).toBeLessThan(15);
+    expect(order).toHaveLength(9);
 
-    // US_DATA_STACK (YIELD_2S10S depends on its persisted Jobs sub-check)
-    // started and fully completed strictly before the others began.
-    expect(stackStart).toBeLessThan(min);
-    expect(min - stackStart).toBeGreaterThanOrEqual(20);
+    // Strictly sequential: each input FINISHED before the next STARTED.
+    expect(finished).toEqual(order);
+
+    // Both of YIELD_2S10S's dependencies completed before it began.
+    const curveIdx = order.indexOf('YIELD_2S10S');
+    expect(order.indexOf('US_DATA_STACK')).toBeLessThan(curveIdx);
+    expect(order.indexOf('REAL_YIELD_SHOCK')).toBeLessThan(curveIdx);
+    expect(finished.indexOf('US_DATA_STACK')).toBeLessThan(curveIdx);
+    expect(finished.indexOf('REAL_YIELD_SHOCK')).toBeLessThan(curveIdx);
   });
 
   it('writes fetch_log start with windowName and trigger=backfill', async () => {

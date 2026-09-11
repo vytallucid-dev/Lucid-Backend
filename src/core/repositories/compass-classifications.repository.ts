@@ -30,6 +30,8 @@ export interface UpsertCompassClassificationInput {
   totalRedWeight: number;
   voteBreakdown: Prisma.InputJsonValue;
   isValidation?: boolean;
+  /** Phase C — which compass_config produced this row. */
+  configVersionLabel?: string;
 }
 
 export interface UpsertCompassClassificationResult {
@@ -211,6 +213,8 @@ export const compassClassificationsRepository = {
       totalRedWeight: incomingRed,
       voteBreakdown: input.voteBreakdown,
       isValidation,
+      // Phase C: records WHICH compass_config produced this classification.
+      configVersionLabel: input.configVersionLabel ?? null,
     };
 
     return prisma.$transaction(async (tx) => {

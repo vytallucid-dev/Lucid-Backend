@@ -42,6 +42,9 @@ export const compassConfigRepository = {
 
     const config = row.configDefinition as unknown as CompassConfigDefinition;
     assertWeightsSumToEight(config, row.versionLabel);
-    return config;
+    // Phase C: stamp the version so callers can record WHICH config produced a
+    // row. Previously unrecoverable after the fact, which is what made the
+    // v1 -> v2 cutover so hard to reason about.
+    return { ...config, versionLabel: row.versionLabel };
   },
 };

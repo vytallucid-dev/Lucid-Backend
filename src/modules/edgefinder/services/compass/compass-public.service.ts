@@ -6,6 +6,10 @@ import {
 } from '@core/repositories/compass-classifications.repository';
 import { compassShockStateRepository } from '@core/repositories/compass-shock-state.repository';
 import { compassConfigRepository } from '@core/repositories/compass-config.repository';
+import { MODULE_TITLES, type ModuleCode } from './modules/module-types';
+import { MODULE_COPY } from './modules/module-copy';
+import { MODULE_ORDER } from './modules/synthesis';
+import { render } from './modules/templates';
 import type { Regime } from './compass-classifier-logic';
 import type { ColorBand } from './compass-bands';
 
@@ -141,6 +145,58 @@ export interface CompassSnapshot {
   inputs: CompassInputVote[];
   scoreImpact: CompassScoreImpactRow[];
   history: CompassHistoryRow[];
+
+  /**
+   * Phase C, ADDITIVE. `useCompass` is a three-consumer hook — the Compass page,
+   * the dashboard hero ambience and the Top Setups regime strip all share one
+   * query key — so every field above keeps its exact shape and these are added
+   * alongside. Null when the module layer has not run for the latest date, so
+   * the page degrades to the pre-Phase-C view rather than erroring.
+   */
+  modules: CompassModulePublic[] | null;
+  synthesis: CompassSynthesisPublic | null;
+}
+
+export interface CompassReadingPublic {
+  readingCode: string;
+  title: string;
+  colorBand: ColorBand | null;
+  isVoting: boolean;
+  weight: number | null;
+  stateLabel: string | null;
+  value: number | null;
+  valueText: string | null;
+  unit: string | null;
+  /** Rendered from a template on the server. The client never composes prose. */
+  explanation: string | null;
+  sourceCode: string;
+  sourceAsOf: string | null;
+  stalenessState: 'FRESH' | 'FILLED' | 'STALE' | 'MISSING';
+  stalenessDays: number | null;
+}
+
+export interface CompassModulePublic {
+  moduleCode: string;
+  title: string;
+  /** Null for a module that does not vote — Policy Stance is descriptive only. */
+  verdictBand: ColorBand | null;
+  stateLabel: string | null;
+  headline: string;
+  /** What this module is looking at, in plain language. */
+  whatItReads: string;
+  /** What it cannot see — stated on the module itself, not buried in a footnote. */
+  blindSpot: string;
+  readings: CompassReadingPublic[];
+}
+
+export interface CompassSentencePublic {
+  text: string;
+  traces: Array<{ moduleCode: string; readingCode: string }>;
+}
+
+export interface CompassSynthesisPublic {
+  sentences: CompassSentencePublic[];
+  disagreements: CompassSentencePublic[];
 }
 
 // ─── JSON narrowing helpers (no `any`) ───────────────────────────────────────
@@ -451,6 +507,100 @@ function buildOverrideStates(row: CompassClassificationRow, regimePathRiskOff: b
  * Assemble the full Compass snapshot. Returns null when the classifier has not
  * yet produced any classification (fresh DB / before first cron run).
  */
+
+/**
+ * Phase C layer 1 + layer 2 for a date.
+ *
+ * Returns nulls when the module run has not happened for that date, so the page
+ * degrades to the pre-Phase-C view instead of erroring. Explanations are
+ * RENDERED HERE, on the server, from {templateId, params} — the client never
+ * composes prose, so a template change cannot make the page state something the
+ * backend did not.
+ */
+async function loadModules(classificationDate: Date): Promise<{
+  modules: CompassModulePublic[] | null;
+  synthesis: CompassSynthesisPublic | null;
+}> {
+  const [readingRows, stateRows, synthRow] = await Promise.all([
+    prisma.compassModuleReading.findMany({
+      where: { classificationDate, isValidation: false, researchTag: '' },
+      orderBy: { readingCode: 'asc' },
+    }),
+    prisma.compassModuleState.findMany({
+      where: { classificationDate, isValidation: false, researchTag: '' },
+    }),
+    prisma.compassSynthesis.findFirst({
+      where: { classificationDate, isValidation: false, researchTag: '' },
+    }),
+  ]);
+
+  if (stateRows.length === 0) return { modules: null, synthesis: null };
+
+  const safeRender = (raw: unknown): string | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const ref = raw as { templateId?: string; params?: Record<string, never> };
+    if (!ref.templateId) return null;
+    try {
+      return render({ templateId: ref.templateId, params: ref.params ?? {} });
+    } catch {
+      // An unknown template id means the registry moved on from a stored row.
+      // Rendering nothing is correct; inventing text is not.
+      return null;
+    }
+  };
+
+  const modules: CompassModulePublic[] = MODULE_ORDER.filter((code) =>
+    stateRows.some((s) => s.moduleCode === code),
+  ).map((code) => {
+    const st = stateRows.find((s) => s.moduleCode === code)!;
+    const copy = MODULE_COPY[code as ModuleCode];
+    return {
+      moduleCode: code,
+      title: MODULE_TITLES[code as ModuleCode],
+      verdictBand: (st.verdictBand as ColorBand | null) ?? null,
+      stateLabel: st.stateLabel,
+      headline: safeRender(st.headline) ?? '',
+      whatItReads: copy.whatItReads,
+      blindSpot: copy.blindSpot,
+      readings: readingRows
+        .filter((r) => r.moduleCode === code)
+        .map((r) => ({
+          readingCode: r.readingCode,
+          title: r.readingCode,
+          colorBand: (r.colorBand as ColorBand | null) ?? null,
+          isVoting: r.isVoting,
+          weight: r.weight === null ? null : Number(r.weight.toString()),
+          stateLabel: r.stateLabel,
+          value: r.valueNumeric === null ? null : Number(r.valueNumeric.toString()),
+          valueText: r.valueText,
+          unit: r.unit,
+          explanation: safeRender(r.explanation),
+          sourceCode: r.sourceCode,
+          sourceAsOf: r.sourceAsOf ? toIsoDate(r.sourceAsOf) : null,
+          stalenessState: r.stalenessState as CompassReadingPublic['stalenessState'],
+          stalenessDays: r.stalenessDays,
+        })),
+    };
+  });
+
+  const toSentences = (raw: unknown): CompassSentencePublic[] =>
+    Array.isArray(raw)
+      ? (raw as Array<{ text?: string; traces?: Array<{ moduleCode: string; readingCode: string }> }>)
+          .filter((x) => typeof x.text === 'string' && x.text.length > 0)
+          .map((x) => ({ text: x.text as string, traces: x.traces ?? [] }))
+      : [];
+
+  return {
+    modules,
+    synthesis: synthRow
+      ? {
+          sentences: toSentences(synthRow.sentences),
+          disagreements: toSentences(synthRow.disagreements),
+        }
+      : null,
+  };
+}
+
 export async function getCompassSnapshot(): Promise<CompassSnapshot | null> {
   const latest = await compassClassificationsRepository.getLatest();
   if (!latest) return null;
@@ -465,6 +615,8 @@ export async function getCompassSnapshot(): Promise<CompassSnapshot | null> {
     compassShockStateRepository.get(false),
     compassConfigRepository.resolveForDate(latest.classificationDate),
   ]);
+
+  const { modules, synthesis } = await loadModules(latest.classificationDate);
 
   // Map input rows by code, coercing Decimals once.
   const inputsByCode = new Map<string, RawInputRow & { subChecksRaw: Prisma.JsonValue | null }>();
@@ -585,5 +737,7 @@ export async function getCompassSnapshot(): Promise<CompassSnapshot | null> {
     inputs,
     scoreImpact,
     history,
+    modules,
+    synthesis,
   };
 }

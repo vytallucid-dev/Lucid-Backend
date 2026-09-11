@@ -1,5 +1,6 @@
 import { prisma } from '@core/db/prisma';
 import type { BiasType, IndicatorValue, CotValue } from './oracle.types';
+import { isRateDecisionCode } from '../services/rate-decision.helpers';
 
 // ============================================================================
 // Bias mapping — uses frontend's getBias thresholds from assets.ts exactly
@@ -209,6 +210,11 @@ export function formatIndicatorValue(code: string, value: number | null): string
   }
   if (code === 'US_JOBLESS_CLAIMS') return `${Math.round(value)}K`;
   if (code === 'US_JOLTS') return `${value.toFixed(2)}M`;
+  // Central-bank rates need two decimals, not one. They move in 25bp steps, so
+  // 1dp rounds 3.75 to "3.8%" — a number no central bank has ever announced,
+  // and one that reads as a typo to anyone who just entered 3.75. US_02Y_SMA
+  // already had its own 2dp branch above for the same reason.
+  if (isRateDecisionCode(code)) return `${value.toFixed(2)}%`;
   if (isPercentIndicator(code)) return `${value.toFixed(1)}%`;
   return value.toFixed(1);
 }
@@ -248,6 +254,11 @@ export function computeSurprise(
   }
   if (code === 'US_JOLTS') {
     return `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}M`;
+  }
+  if (isRateDecisionCode(code)) {
+    // Same 25bp argument as formatIndicatorValue: at 1dp a quarter-point
+    // surprise renders "+0.3%" and an eighth-point one disappears entirely.
+    return `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}%`;
   }
   if (isPercentIndicator(code)) {
     return formatPercentWithSign(diff);

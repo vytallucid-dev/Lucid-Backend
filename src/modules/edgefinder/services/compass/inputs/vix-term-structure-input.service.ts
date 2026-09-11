@@ -64,6 +64,7 @@ export async function ingestVixTermStructureInput(
         symbols: { vix: VIX_SYMBOL, vix3m: VIX3M_SYMBOL },
       },
       source: 'derived',
+      configVersionLabel: config.versionLabel,
       isValidation,
     });
     logger.warn(
@@ -122,6 +123,7 @@ export async function ingestVixTermStructureInput(
       staleLimitDays: config.staleness.stale_limit_market_data_days,
     },
     source: 'derived',
+    configVersionLabel: config.versionLabel,
     isValidation,
   });
 

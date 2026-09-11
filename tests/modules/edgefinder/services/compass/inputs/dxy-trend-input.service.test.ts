@@ -11,22 +11,29 @@ import { eodhdClient } from '@core/clients/eodhd/eodhd.client';
 import { compassInputsRepository } from '@core/repositories/compass-inputs.repository';
 import { ingestDxyTrendInput } from '@modules/edgefinder/services/compass/inputs/dxy-trend-input.service';
 import { COMPASS_CONFIG_V1_FIXTURE as cfg } from '../compass-config.fixture';
+import { isUsMarketTradingDay } from '@core/utils/us-market-calendar';
 
 const mockedFetch = eodhdClient.fetchEodSeries as unknown as ReturnType<typeof vi.fn>;
 const mockedUpsert = compassInputsRepository.upsert as unknown as ReturnType<typeof vi.fn>;
 
 const OBS_DATE = new Date(Date.UTC(2026, 4, 18)); // Monday
 
-function isWeekend(d: Date): boolean {
-  const dow = d.getUTCDay();
-  return dow === 0 || dow === 6;
-}
-
+/**
+ * Build a synthetic EODHD series ending on `endDate`, one row per US market
+ * TRADING day walking backwards.
+ *
+ * Phase C: this previously walked weekdays, which put rows on days the market
+ * was shut (a 50-row window ending 2026-05-18 reaches back past Good Friday
+ * 2026-04-03). EODHD does not publish on those days, so the fixture was
+ * modelling data that cannot exist, and once the reference calendar became
+ * holiday-aware the clean series came up one observation short of the 50 the
+ * SMA needs. Building trading days makes the fixture match the feed.
+ */
 function buildWeekdayRows(values: number[], endDate: Date = OBS_DATE): { date: string; value: number }[] {
   const dates: Date[] = [];
   const cursor = new Date(endDate);
   while (dates.length < values.length) {
-    if (!isWeekend(cursor)) dates.unshift(new Date(cursor));
+    if (isUsMarketTradingDay(cursor)) dates.unshift(new Date(cursor));
     cursor.setUTCDate(cursor.getUTCDate() - 1);
   }
   return dates.map((d, i) => ({ date: d.toISOString().slice(0, 10), value: values[i] }));

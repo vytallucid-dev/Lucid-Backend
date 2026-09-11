@@ -8,7 +8,7 @@ import type { ForexFactoryEvent } from '@core/clients/forex-factory/types';
 import { resolveEvent } from './forex-factory-event-mapping';
 import { parseForexFactoryValue } from './forex-factory-value-parser';
 import { calendarEventsRepository } from '@core/repositories/calendar-events.repository';
-import { getPriorRateLevel, levelToBpsChange } from './rate-decision.helpers';
+import { getPriorRateLevel } from './rate-decision.helpers';
 
 const JOB_NAME = 'forex_factory_weekly_fetch';
 
@@ -318,26 +318,26 @@ async function ingestRateDecision(
 ): Promise<IngestOneOutcome> {
   const priorRate = await getPriorRateLevel(indicatorId, observationDate);
   const firstRelease = priorRate === null;
-  const bpsChange = firstRelease ? 0 : (newRateLevel - priorRate) * 100;
-  // Change 2 (rate decision scores surprise) — Step 1. FF publishes forecast
-  // for a rate event as the expected absolute rate level, same as actual/
-  // previous (see forex-factory-event-mapping.ts / the value parser). Convert
-  // it to a bps-change delta against the SAME priorRate as `value`, so both
-  // land in the same unit.
-  const forecastBpsChange = levelToBpsChange(expectedRateLevel, priorRate);
 
+  // Rate decisions store LEVELS, like every other indicator. ForexFactory
+  // publishes actual, forecast and previous for a rate event as absolute rate
+  // levels already (see forex-factory-event-mapping.ts and the value parser),
+  // so they go in as they arrive — no conversion, and nothing left in metadata
+  // that a display path has to know to look for. The handler diffs actual
+  // against forecast to score the surprise, which is what it always measured.
   const sourceMetadata: Prisma.InputJsonObject = {
     ...buildSourceMetadata(event),
-    rate_level: newRateLevel,
-    ...(expectedRateLevel !== null ? { expected_rate_level: expectedRateLevel } : {}),
     ...(firstRelease ? { first_release: true } : {}),
   };
 
   const result = await dataPointsRepository.upsert({
     indicatorId,
     observationDate,
-    value: bpsChange,
-    forecastValue: forecastBpsChange,
+    value: newRateLevel,
+    forecastValue: expectedRateLevel,
+    // The rate this decision moved from. Null on a first release, where there
+    // genuinely is no prior rate — never a fabricated zero.
+    previousValue: priorRate,
     source: 'forex_factory',
     sourceMetadata,
     fetchedVia: logId,
@@ -348,10 +348,8 @@ async function ingestRateDecision(
       indicatorCode,
       observationDate: observationDate.toISOString(),
       newRateLevel,
-      priorRate,
-      bpsChange,
       expectedRateLevel,
-      forecastBpsChange,
+      priorRate,
       action: result.action,
     },
     'ForexFactory: rate decision ingested',

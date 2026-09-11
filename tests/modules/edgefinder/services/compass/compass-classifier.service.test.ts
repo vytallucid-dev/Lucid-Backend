@@ -178,6 +178,63 @@ describe('runCompassClassifier', () => {
     mockedShockUpsert.mockResolvedValue(undefined);
   });
 
+  describe('the trading-calendar gate (Phase C)', () => {
+    // The defect this closes: "all six inputs present" was never a proxy for
+    // "the market was open". Phase 5 forward-fill resolves a value for every
+    // input on a closed market, so the classifier wrote full classifications on
+    // 28 weekend days and on three US market holidays, and each of those rows
+    // advanced the persistence counter.
+    const SATURDAY = new Date(Date.UTC(2026, 8, 5));
+    const SUNDAY = new Date(Date.UTC(2026, 8, 6));
+    const LABOR_DAY = new Date(Date.UTC(2026, 8, 7));
+    const JUNETEENTH = new Date(Date.UTC(2026, 5, 19));
+    const GOOD_FRIDAY = new Date(Date.UTC(2026, 3, 3));
+
+    it.each([
+      ['Saturday', SATURDAY, 'Saturday'],
+      ['Sunday', SUNDAY, 'Sunday'],
+      ['Labor Day', LABOR_DAY, 'Labor Day'],
+      ['Juneteenth', JUNETEENTH, 'Juneteenth'],
+      ['Good Friday', GOOD_FRIDAY, 'Good Friday'],
+    ])('skips %s even with all six inputs present', async (_label, date, reason) => {
+      // All six inputs ARE present — exactly the situation that used to produce
+      // a full classification row.
+      setAllSixInputs(defaultGreenInputs());
+      const result = await runCompassClassifier('manual', null, date);
+
+      expect(result.status).toBe('skipped_non_trading_day');
+      expect(result.reason).toContain(reason);
+      expect(mockedUpsert).not.toHaveBeenCalled();
+      expect(mockedShockUpsert).not.toHaveBeenCalled();
+      expect(mockedComplete.mock.calls[0][0].metadata.reason).toBe('skipped_non_trading_day');
+      expect(mockedComplete.mock.calls[0][0].metadata.nonTradingReason).toBe(reason);
+    });
+
+    it('does not advance the persistence counter on a non-trading day', async () => {
+      setAllSixInputs(defaultGreenInputs());
+      await runCompassClassifier('manual', null, SUNDAY);
+      // The persistence machine is never consulted, so no prior is read and
+      // nothing is written.
+      expect(mockedGetMostRecent).not.toHaveBeenCalled();
+      expect(mockedUpsert).not.toHaveBeenCalled();
+    });
+
+    it('still classifies normally on an ordinary trading day', async () => {
+      setAllSixInputs(defaultGreenInputs());
+      const result = await runCompassClassifier('manual', null, DATE);
+      expect(result.status).toBe('success');
+      expect(mockedUpsert).toHaveBeenCalledTimes(1);
+    });
+
+    it('the calendar gate runs BEFORE the input-completeness check', async () => {
+      // Only 5 inputs AND a Sunday: the calendar reason must win, so the two
+      // failure modes stay distinguishable in data_fetch_log.
+      setAllSixInputs(defaultGreenInputs().slice(0, 5));
+      const result = await runCompassClassifier('manual', null, SUNDAY);
+      expect(result.status).toBe('skipped_non_trading_day');
+    });
+  });
+
   it('skipped_no_inputs when fewer than 6 inputs present', async () => {
     setAllSixInputs(defaultGreenInputs().slice(0, 5));
     const result = await runCompassClassifier('manual', null, DATE);

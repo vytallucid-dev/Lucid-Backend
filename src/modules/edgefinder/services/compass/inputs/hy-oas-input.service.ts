@@ -76,6 +76,7 @@ export async function ingestHyOasInput(
         seriesId: compassFredClient.SERIES.HY_OAS,
       },
       source: 'fred',
+      configVersionLabel: config.versionLabel,
       isValidation,
     });
     logger.warn(
@@ -100,6 +101,7 @@ export async function ingestHyOasInput(
         seriesId: compassFredClient.SERIES.HY_OAS,
       },
       source: 'fred',
+      configVersionLabel: config.versionLabel,
       isValidation,
     });
     logger.warn(
@@ -125,6 +127,7 @@ export async function ingestHyOasInput(
       stale: false,
     },
     source: 'fred',
+    configVersionLabel: config.versionLabel,
     isValidation,
   });
 

@@ -24,6 +24,7 @@ import {
 } from './compass-shock-layer';
 import { buildCleanSeries, type DatedValue } from './compass-staleness';
 import { generateTradingDays } from './validation/historical-backfill.service';
+import { isUsMarketTradingDay, nonTradingReason } from '@core/utils/us-market-calendar';
 import {
   isRegimePathRiskOff,
   computeRateGateHawkish,
@@ -57,7 +58,7 @@ const US02Y_HISTORY_DAYS_BACK = 45;
 
 export interface RunClassifierResult {
   logId: string;
-  status: 'success' | 'skipped_no_inputs' | 'failed';
+  status: 'success' | 'skipped_non_trading_day' | 'skipped_no_inputs' | 'failed';
   classificationDate: Date | null;
   candidateRegime?: Regime;
   activeRegime?: Regime;
@@ -204,6 +205,46 @@ export async function runCompassClassifier(
   });
 
   try {
+    // --- Step 0: the trading-calendar gate (Phase C) ---
+    // This runs BEFORE anything else, and deliberately before the
+    // input-completeness check below, because the two are different failures
+    // and conflating them is what hid this bug for four months.
+    //
+    // "All six inputs present" was never a proxy for "the market was open".
+    // Phase 5's forward-fill means every input resolves a value on a closed
+    // market: EODHD returns the previous close for a Saturday, and the FRED
+    // series carry forward. So the classifier wrote a full classification on
+    // 28 weekend days and on at least three US market holidays (Juneteenth
+    // 2026, 3 July 2026, Labor Day 2026 — verified against the database in
+    // Phase C Stage 0). Those rows advanced the persistence counter, which
+    // means a regime transition could complete on a Sunday on no new
+    // information.
+    if (!isUsMarketTradingDay(classificationDate)) {
+      const reason = nonTradingReason(classificationDate);
+      logger.info(
+        { jobName: JOB_NAME, classificationDate: dateLabel, reason },
+        'Compass classifier: not a US market trading day — skipping',
+      );
+      await dataFetchLogRepository.complete({
+        logId: log.id,
+        status: 'success',
+        rowsInserted: 0,
+        rowsUpdated: 0,
+        rowsSkipped: 1,
+        metadata: {
+          classificationDate: dateLabel,
+          reason: 'skipped_non_trading_day',
+          nonTradingReason: reason,
+        },
+      });
+      return {
+        logId: log.id,
+        status: 'skipped_non_trading_day',
+        classificationDate,
+        reason: `${dateLabel} is not a US market trading day (${reason})`,
+      };
+    }
+
     const config = await compassConfigRepository.resolveForDate(classificationDate);
 
     const inputs = await prisma.compassInput.findMany({
@@ -218,7 +259,7 @@ export async function runCompassClassifier(
       const presentCodes = inputs.map((r) => r.inputCode).sort();
       logger.info(
         { jobName: JOB_NAME, classificationDate: dateLabel, presentCodes },
-        'Compass classifier: not all 6 inputs present — skipping (non-trading day or ingest gap)',
+        'Compass classifier: not all 6 inputs present on a trading day — skipping (ingest gap)',
       );
       await dataFetchLogRepository.complete({
         logId: log.id,
@@ -503,6 +544,7 @@ export async function runCompassClassifier(
       totalRedWeight: voteWeights.red,
       voteBreakdown,
       isValidation,
+      configVersionLabel: config.versionLabel,
     });
 
     await dataFetchLogRepository.complete({

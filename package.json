@@ -21,14 +21,7 @@
     "db:seed:compass-config": "tsx prisma/seed-compass-config.ts",
     "db:seed:indicator-variants": "tsx prisma/seed-indicator-variants.ts",
     "cutover:dxy": "tsx scripts/cutover-dxy-to-eodhd.ts",
-    "update:indicator-labels": "tsx scripts/update-indicator-labels.ts",
-    "verify:compass-config": "tsx scripts/verify-compass-config-migration.ts",
-    "verify:compass-phase2a": "tsx scripts/verify-compass-phase2a.ts",
-    "verify:compass-phase2b": "tsx scripts/verify-compass-phase2b.ts",
-    "verify:compass-phase3": "tsx scripts/verify-compass-phase3.ts",
-    "verify:compass-phase4": "tsx scripts/verify-compass-phase4.ts",
-    "verify:compass-phase5": "tsx scripts/verify-compass-phase5.ts",
-    "verify:compass-phase6": "tsx scripts/verify-compass-phase6.ts"
+    "update:indicator-labels": "tsx scripts/update-indicator-labels.ts"
   },
   "engines": {
     "node": ">=22.0.0"

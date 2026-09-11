@@ -31,6 +31,29 @@ export interface FredFetchOptions {
   observationStart?: string; // ISO date
   observationEnd?: string; // ISO date
   limit?: number; // default 100000 (effectively all)
+
+  /**
+   * ALFRED real-time (vintage) bounds. Phase C.
+   *
+   * `observation_end` alone bounds WHICH OBSERVATION DATES come back; it does
+   * NOT bound what was KNOWN on a given day. Two distinct biases follow from
+   * omitting these:
+   *
+   *   1. Revision bias — FRED serves the latest revised value of every
+   *      observation, not the value as first published.
+   *   2. Publication-lag bias, the larger of the two — an observation DATED
+   *      2008-09-01 was not published until mid-October 2008, but a filter of
+   *      `obs.date <= 2008-09-02` admits it six weeks early.
+   *
+   * Setting realtimeStart == realtimeEnd == some past date D makes FRED serve
+   * the ALFRED vintage as of D: the data exactly as it was actually known then.
+   *
+   * Both are OPTIONAL and are only appended to the request when supplied, so
+   * every existing caller (NIFTY's fred-indicator.service, EdgeFinder macro)
+   * is byte-for-byte unaffected.
+   */
+  realtimeStart?: string; // ISO date
+  realtimeEnd?: string; // ISO date
 }
 
 export interface FredFetchResult {

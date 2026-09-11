@@ -254,6 +254,12 @@ export const dataPointsRepository = {
       forecastValue?: DecimalInput | null;
       previousValue?: DecimalInput | null;
       variant?: string | null;
+      /**
+       * Rate decisions carry their absolute level in metadata rather than in
+       * `value` (which holds a bps change), so an edit of one has to rewrite
+       * the metadata alongside the columns or the two silently disagree.
+       */
+      sourceMetadata?: Prisma.InputJsonObject;
     },
   ): Promise<DataPoint> {
     const data: Prisma.DataPointUpdateInput = {};
@@ -268,6 +274,7 @@ export const dataPointsRepository = {
       data.previousValue = normalizeOptionalDecimal(edits.previousValue);
     }
     if (edits.variant !== undefined) data.variant = edits.variant;
+    if (edits.sourceMetadata !== undefined) data.sourceMetadata = edits.sourceMetadata;
 
     return prisma.dataPoint.update({ where: { id }, data });
   },

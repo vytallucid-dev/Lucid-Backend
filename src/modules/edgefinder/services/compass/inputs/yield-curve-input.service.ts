@@ -3,7 +3,7 @@ import { compassFredClient } from '@core/clients/fred/compass-fred.client';
 import { compassInputsRepository } from '@core/repositories/compass-inputs.repository';
 import { prisma } from '@core/db/prisma';
 import { compassCurveStateRepository } from '@core/repositories/compass-curve-state.repository';
-import { evaluate2s10s, type ColorBand } from '../compass-bands';
+import { evaluate2s10s, curveGreenBlockedByRealShock, type ColorBand } from '../compass-bands';
 import {
   scanForMostRecentEpisode,
   isWithinRedWindow,
@@ -65,6 +65,39 @@ async function getJobsSubCheckBand(
   }
 
   return jobsBand;
+}
+
+/**
+ * Read the R1_REAL_YIELD_SHOCK band that was persisted for the SAME
+ * observationDate, for the Phase C GREEN gate.
+ *
+ * Unlike the jobs sub-check above, a missing or null band here is NOT an error
+ * and must NOT throw. R1 is legitimately unavailable in three ordinary cases:
+ * before DFII10 begins on 2003-01-02, when the series is stale or too short,
+ * and under any config version that predates the `yields` block. In all three
+ * the gate is simply inert and the curve behaves exactly as it did before.
+ *
+ * FAILING OPEN IS THE CORRECT DIRECTION HERE. A null band cannot block the GREEN
+ * clause, so missing R1 data can never manufacture a more negative reading than
+ * the evidence supports — it just forgoes the correction.
+ */
+async function getRealYieldShockBand(
+  observationDate: Date,
+  isValidation: boolean,
+): Promise<ColorBand | null> {
+  const row = await prisma.compassInput.findUnique({
+    where: {
+      observationDate_inputCode_isValidation: {
+        observationDate,
+        inputCode: 'REAL_YIELD_SHOCK',
+        isValidation,
+      },
+    },
+  });
+  if (!row) return null;
+  const subChecks = row.subChecks as { band?: unknown } | null;
+  const band = subChecks?.band;
+  return band === 'GREEN' || band === 'YELLOW' || band === 'RED' ? band : null;
 }
 
 export async function ingestYieldCurveInput(
@@ -143,8 +176,23 @@ export async function ingestYieldCurveInput(
   });
 
   const jobsSubCheckBand = await getJobsSubCheckBand(observationDate, isValidation);
+  const realYieldShockBand = await getRealYieldShockBand(observationDate, isValidation);
 
-  const colorBand = evaluate2s10s(todayLevel, delta30, insideRedWindow, jobsSubCheckBand, config);
+  const colorBand = evaluate2s10s(
+    todayLevel,
+    delta30,
+    insideRedWindow,
+    jobsSubCheckBand,
+    config,
+    realYieldShockBand,
+  );
+  // Phase C audit: record whether the GREEN clause was actually suppressed, so
+  // the effect is countable after the fact rather than inferred.
+  const curveGreenGated =
+    curveGreenBlockedByRealShock(config, realYieldShockBand) &&
+    todayLevel >= 0 &&
+    delta30 !== null &&
+    delta30 >= config.yieldCurve.curve_delta30_floor;
 
   await compassInputsRepository.upsert({
     observationDate,
@@ -159,6 +207,8 @@ export async function ingestYieldCurveInput(
       unInversionDate: mostRecentEpisode?.unInversionDate?.toISOString().slice(0, 10) ?? null,
       insideRedWindow,
       jobsSubCheckBand,
+      realYieldShockBand,
+      curveGreenGated,
       insufficientHistory,
       cleanObservationCount: clean.series.length,
       stale: clean.isStale,
@@ -166,6 +216,7 @@ export async function ingestYieldCurveInput(
       staleLimitDays: config.staleness.stale_limit_fred_rates_days,
     },
     source: 'fred',
+    configVersionLabel: config.versionLabel,
     isValidation,
   });
 
@@ -176,6 +227,8 @@ export async function ingestYieldCurveInput(
       delta30,
       insideRedWindow,
       jobsSubCheckBand,
+      realYieldShockBand,
+      curveGreenGated,
       inversionStart: mostRecentEpisode?.inversionStart ?? null,
       unInversionDate: mostRecentEpisode?.unInversionDate ?? null,
       colorBand,

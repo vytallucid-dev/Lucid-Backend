@@ -9,7 +9,9 @@ import {
   evaluateGdpLevel,
   evaluateJobs,
   aggregateUsDataStack,
+  evaluateRealYieldShock,
 } from '@modules/edgefinder/services/compass/compass-bands';
+import type { CompassConfigDefinition } from '@modules/edgefinder/services/compass/compass-config.types';
 import { COMPASS_CONFIG_V1_FIXTURE as cfg } from './compass-config.fixture';
 
 describe('evaluateVix', () => {
@@ -157,5 +159,103 @@ describe('aggregateUsDataStack', () => {
   });
   it('three GREEN → GREEN', () => {
     expect(aggregateUsDataStack('GREEN', 'GREEN', 'GREEN', cfg)).toBe('GREEN');
+  });
+});
+
+describe('Phase C — evaluateRealYieldShock (R1, non-voting)', () => {
+  const withYields: CompassConfigDefinition = {
+    ...cfg,
+    yields: {
+      real_yield_shock_60d_red_bp: 60,
+      real_yield_shock_60d_yellow_bp: 30,
+      curve_green_requires_no_real_shock: true,
+    },
+  };
+
+  it.each([
+    [120, 'RED'],
+    [60, 'RED'],
+    [59.9, 'YELLOW'],
+    [30, 'YELLOW'],
+    [29.9, 'GREEN'],
+    [0, 'GREEN'],
+  ])('%dbp -> %s', (bp, expected) => {
+    expect(evaluateRealYieldShock(bp as number, withYields)).toBe(expected);
+  });
+
+  it('is one-sided: a fast FALL in real yields is GREEN, not a shock', () => {
+    // A symmetric negative leg was never tested and must not be inferred.
+    expect(evaluateRealYieldShock(-80, withYields)).toBe('GREEN');
+  });
+
+  it('returns null when the change cannot be computed', () => {
+    // Insufficient history, a stale series, or any date before DFII10 begins.
+    expect(evaluateRealYieldShock(null, withYields)).toBeNull();
+  });
+
+  it('returns null under a config that predates the yields block (v1/v2)', () => {
+    expect(evaluateRealYieldShock(120, cfg)).toBeNull();
+  });
+});
+
+describe('Phase C — the 2s10s GREEN gate', () => {
+  const gated: CompassConfigDefinition = {
+    ...cfg,
+    yields: {
+      real_yield_shock_60d_red_bp: 60,
+      real_yield_shock_60d_yellow_bp: 30,
+      curve_green_requires_no_real_shock: true,
+    },
+  };
+  // Satisfies the GREEN clause: positive curve, delta at the floor.
+  const GREEN_ARGS = [0.5, 0.0, false, 'GREEN' as const] as const;
+
+  it('votes GREEN when R1 is not RED', () => {
+    expect(evaluate2s10s(...GREEN_ARGS, gated, 'GREEN')).toBe('GREEN');
+    expect(evaluate2s10s(...GREEN_ARGS, gated, 'YELLOW')).toBe('GREEN');
+  });
+
+  it('falls through to YELLOW when R1 is RED', () => {
+    expect(evaluate2s10s(...GREEN_ARGS, gated, 'RED')).toBe('YELLOW');
+  });
+
+  it('is inert when R1 is unavailable — a null band never blocks GREEN', () => {
+    // Pre-2003, stale, or insufficient history. Failing open is the correct
+    // direction: missing data must not manufacture a more negative reading.
+    expect(evaluate2s10s(...GREEN_ARGS, gated, null)).toBe('GREEN');
+  });
+
+  it('is inert under a config without the yields block', () => {
+    expect(evaluate2s10s(...GREEN_ARGS, cfg, 'RED')).toBe('GREEN');
+  });
+
+  it('is inert when the flag is explicitly false', () => {
+    const off: CompassConfigDefinition = {
+      ...gated,
+      yields: { ...gated.yields!, curve_green_requires_no_real_shock: false },
+    };
+    expect(evaluate2s10s(...GREEN_ARGS, off, 'RED')).toBe('GREEN');
+  });
+
+  it('never overrides the RED clause — an inversion red window still wins', () => {
+    expect(evaluate2s10s(0.5, 0.0, true, 'YELLOW', gated, 'RED')).toBe('RED');
+    expect(evaluate2s10s(0.5, 0.0, true, 'YELLOW', gated, null)).toBe('RED');
+  });
+
+  it('THE POINT: the gate can only move GREEN->YELLOW, never toward RED', () => {
+    // This is why it removes false Risk-On days rather than creating Risk-Off
+    // ones — candidate Risk-Off is gated on RED weight alone, and this gate
+    // cannot add any. Exhaustive over the inputs that reach the GREEN clause.
+    for (const t10y2y of [0, 0.5, 2.0]) {
+      for (const delta30 of [-0.05, 0, 0.5]) {
+        for (const jobs of ['GREEN', 'YELLOW', 'RED'] as const) {
+          const ungated = evaluate2s10s(t10y2y, delta30, false, jobs, gated, 'GREEN');
+          const withShock = evaluate2s10s(t10y2y, delta30, false, jobs, gated, 'RED');
+          expect(withShock).not.toBe('RED');
+          if (ungated === 'GREEN') expect(withShock).toBe('YELLOW');
+          else expect(withShock).toBe(ungated);
+        }
+      }
+    }
   });
 });

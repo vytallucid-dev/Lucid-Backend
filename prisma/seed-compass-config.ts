@@ -38,6 +38,8 @@ const prisma = new PrismaClient();
 const V1_EFFECTIVE_FROM = new Date('2026-01-01');
 const V1_EFFECTIVE_TO = new Date('2026-07-15');
 const V2_EFFECTIVE_FROM = new Date('2026-07-16'); // Phase 2A activation date
+const V2_EFFECTIVE_TO = new Date('2026-09-08'); // closed by Phase C
+const V3_EFFECTIVE_FROM = new Date('2026-09-09'); // Phase C activation date
 
 // v1's original level/30d-change HY OAS and pct-based DXY trend logic no
 // longer exists in code (compass-bands.ts now only implements the v2-shaped
@@ -170,6 +172,36 @@ const COMPASS_CONFIG_V2 = {
   persistence: { daysToHigherSeverity: 3, daysToLowerSeverity: 5 },
 };
 
+const COMPASS_CONFIG_V3 = {
+  ...COMPASS_CONFIG_V2,
+  // Phase C. Weights are UNCHANGED and still sum to exactly 8.0.
+  //
+  // R1_REAL_YIELD_SHOCK is computed and displayed every day but does NOT vote,
+  // so it has deliberately no entry here. Giving it its proposed weight of 1.5
+  // would move the scale to 9.5 while redRiskOffAt (3.5) and greenRiskOnAt (5.0)
+  // stayed calibrated for 8.0 — silently loosening both by about 16%. Whether it
+  // should vote is decided by the rescaling report, not by this seed.
+  yields: {
+    // Thresholds from Phase B Rule 1. The sensitivity curve is monotone across
+    // the entire 0-110bp range in BOTH halves of an untouched 2015 split, which
+    // is the signature of a real effect rather than a fitted one; 60bp is chosen
+    // for sample size (10 independent episodes), not for fit.
+    real_yield_shock_60d_red_bp: 60,
+    real_yield_shock_60d_yellow_bp: 30,
+    // THE one scoring change in Phase C. The 2s10s GREEN clause fires during
+    // bear steepeners, so the curve voted GREEN at the term-premium peak in 26
+    // of 28 episodes, and GREEN on 76.9% of days inside term-premium episodes
+    // versus 49.3% outside — it votes MORE positively during long-end stress.
+    // This stops the GREEN clause firing while R1 is RED.
+    //
+    // It moves weight from green to yellow and can never add red, so it removes
+    // FALSE RISK-ON days rather than creating Risk-Off days. That is the
+    // intended effect: a missed Risk-Off costs a trade not taken, whereas a
+    // false Risk-On during long-end stress invites sizing up into it.
+    curve_green_requires_no_real_shock: true,
+  },
+};
+
 async function seedCompassConfig(): Promise<void> {
   await prisma.compassConfig.upsert({
     where: { versionLabel: 'v1' },
@@ -196,18 +228,36 @@ async function seedCompassConfig(): Promise<void> {
     update: {
       configDefinition: COMPASS_CONFIG_V2,
       effectiveFrom: V2_EFFECTIVE_FROM,
-      effectiveTo: null,
+      effectiveTo: V2_EFFECTIVE_TO,
       notes: 'Compass v2 — Phase 2A: VIX Term Structure replaces Gold/DXY correlation, HY OAS velocity-based, DXY trend direction corrected, 2s10s weight reduced to 1.0. Phase 2B: 2s10s rescored to the inversion-episode state machine (curve_* keys); episode state cached in compass_curve_state. Phase 3: persistence reshaped to the asymmetric machine (3 days toward higher severity, 5 toward lower). Phase 4: crisis clause retired, replaced by the Shock Layer (Trigger A/B, shockLayer keys); shock state cached in compass_shock_state; final_regime/shock_a_active/shock_b_active added to compass_classifications. Phase 5: staleness/forward-fill (staleness keys) + observation-indexed lookbacks; USDJPY history-gap fix so Trigger B can compute. Phase 6: override gates — rate gate (rateGate keys) on JPY Overrides 3&5 with Trigger B bypass, fed-constraint gate on gold Override 2 (fed_constraint lives in currency_cycle_stance); US02Y_CLOSE plumbing input; gate audit columns on compass_classifications.',
     },
     create: {
       versionLabel: 'v2',
       configDefinition: COMPASS_CONFIG_V2,
       effectiveFrom: V2_EFFECTIVE_FROM,
-      effectiveTo: null,
+      effectiveTo: V2_EFFECTIVE_TO,
       notes: 'Compass v2 — Phase 2A: VIX Term Structure replaces Gold/DXY correlation, HY OAS velocity-based, DXY trend direction corrected, 2s10s weight reduced to 1.0. Phase 2B: 2s10s rescored to the inversion-episode state machine (curve_* keys); episode state cached in compass_curve_state. Phase 3: persistence reshaped to the asymmetric machine (3 days toward higher severity, 5 toward lower). Phase 4: crisis clause retired, replaced by the Shock Layer (Trigger A/B, shockLayer keys); shock state cached in compass_shock_state; final_regime/shock_a_active/shock_b_active added to compass_classifications. Phase 5: staleness/forward-fill (staleness keys) + observation-indexed lookbacks; USDJPY history-gap fix so Trigger B can compute. Phase 6: override gates — rate gate (rateGate keys) on JPY Overrides 3&5 with Trigger B bypass, fed-constraint gate on gold Override 2 (fed_constraint lives in currency_cycle_stance); US02Y_CLOSE plumbing input; gate audit columns on compass_classifications.',
     },
   });
-  console.log(`Seeded compass_config v2 (effectiveFrom=${V2_EFFECTIVE_FROM.toISOString().slice(0, 10)}, ACTIVE)`);
+  console.log(`Seeded compass_config v2 (effectiveFrom=${V2_EFFECTIVE_FROM.toISOString().slice(0, 10)}, effectiveTo=${V2_EFFECTIVE_TO.toISOString().slice(0, 10)})`);
+
+  await prisma.compassConfig.upsert({
+    where: { versionLabel: 'v3' },
+    update: {
+      configDefinition: COMPASS_CONFIG_V3,
+      effectiveFrom: V3_EFFECTIVE_FROM,
+      effectiveTo: null,
+      notes: 'Compass v3 — Phase C. Adds the yields block: R1_REAL_YIELD_SHOCK (60-day change in the 10-year TIPS real yield, DFII10) computed and displayed daily but NON-VOTING, and curve_green_requires_no_real_shock, which gates the 2s10s GREEN clause so the curve can no longer vote GREEN while R1 is RED. Weights unchanged and still sum to 8.0. Live classification history was archived at this boundary and restarted clean — see SYSTEM_REFERENCE.md Known data incidents.',
+    },
+    create: {
+      versionLabel: 'v3',
+      configDefinition: COMPASS_CONFIG_V3,
+      effectiveFrom: V3_EFFECTIVE_FROM,
+      effectiveTo: null,
+      notes: 'Compass v3 — Phase C. Adds the yields block: R1_REAL_YIELD_SHOCK (60-day change in the 10-year TIPS real yield, DFII10) computed and displayed daily but NON-VOTING, and curve_green_requires_no_real_shock, which gates the 2s10s GREEN clause so the curve can no longer vote GREEN while R1 is RED. Weights unchanged and still sum to 8.0. Live classification history was archived at this boundary and restarted clean — see SYSTEM_REFERENCE.md Known data incidents.',
+    },
+  });
+  console.log(`Seeded compass_config v3 (effectiveFrom=${V3_EFFECTIVE_FROM.toISOString().slice(0, 10)}, ACTIVE)`);
 }
 
 async function main(): Promise<void> {

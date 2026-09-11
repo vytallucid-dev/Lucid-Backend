@@ -8,6 +8,8 @@ export const ManualDataEditSchema = z.object({
   actual: z.number().finite().optional(),
   forecast: z.number().finite().nullable().optional(),
   previous: z.number().finite().nullable().optional(),
+  rateRangeLower: z.number().finite().nullable().optional(),
+  rateRangeUpper: z.number().finite().nullable().optional(),
   variant: z.string().min(1).max(20).nullable().optional(),
 });
 
@@ -29,13 +31,16 @@ export async function manualDataEditHandler(
       });
     }
 
-    const { observationDate, actual, forecast, previous, variant } = parsed.data;
+    const { observationDate, actual, forecast, previous, rateRangeLower, rateRangeUpper, variant } =
+      parsed.data;
 
     if (
       observationDate === undefined &&
       actual === undefined &&
       forecast === undefined &&
       previous === undefined &&
+      rateRangeLower === undefined &&
+      rateRangeUpper === undefined &&
       variant === undefined
     ) {
       throw new AppError(400, 'No fields to edit', 'NO_EDITS_PROVIDED');
@@ -68,6 +73,8 @@ export async function manualDataEditHandler(
       actual,
       forecast,
       previous,
+      rateRangeLower,
+      rateRangeUpper,
       variant,
       triggeredBy,
     });

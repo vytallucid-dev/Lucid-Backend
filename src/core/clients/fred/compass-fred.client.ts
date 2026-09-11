@@ -13,6 +13,39 @@ const COMPASS_FRED_SERIES = {
   // data_points, discarding the raw daily close; the rate gate needs the raw
   // close AND its own 21-obs SMA, so Compass fetches DGS2 itself.
   US_02Y: 'DGS2',
+
+  // ---- Phase C additions -------------------------------------------------
+  /**
+   * R1_REAL_YIELD_SHOCK — 10-year TIPS real yield. The one new rule Phase B's
+   * evidence supports: the 60-day change explains gold at R^2 0.21 in-sample
+   * AND 0.21 out-of-sample, with a monotone sensitivity curve across the whole
+   * 0-110bp threshold range. Ships NON-VOTING in this phase.
+   * Available from 2003-01-02 — which is also the hard limit on how far back
+   * the curve GREEN gate can be evaluated.
+   */
+  REAL_YIELD_10Y: 'DFII10',
+  /**
+   * Long-history credit. FRED has retroactively truncated EVERY ICE BofA OAS
+   * series (including HY_OAS above) to 2023-09-11+, across all vintages, so
+   * HY_OAS cannot describe any historical episode and Trigger A is
+   * structurally unable to fire before that date. BAA10Y is Moody's, not
+   * ICE-licensed, and runs daily from 1986.
+   */
+  BAA_SPREAD: 'BAA10Y',
+  /** Long-end display readings. */
+  US_30Y: 'DGS30',
+  US_20Y: 'DGS20',
+  US_10Y: 'DGS10',
+  /** 10-year breakeven inflation, for the real-yield/breakeven decomposition. */
+  BREAKEVEN_10Y: 'T10YIE',
+  /**
+   * Kim-Wright 10-year term premium. Shown ALONGSIDE the NY Fed's ACM measure,
+   * never instead of it: the two disagree on the term-premium share of the 2013
+   * taper tantrum by 0.36, on April 2025 by 1.22, and on the sign of the
+   * current 2026 regime. Displaying either alone would present one model's
+   * opinion as fact.
+   */
+  TERM_PREMIUM_KW: 'THREEFYTP10',
 } as const;
 
 export type CompassFredSeriesId =
@@ -71,16 +104,30 @@ export const compassFredClient = {
    * (inclusive). Used by historical backfill so the lookback window can be
    * anchored at any past date. Missing values (FRED's '.') are mapped to
    * null.
+   *
+   * Phase C: `asOfDate` requests the ALFRED VINTAGE as of that date — the data
+   * exactly as it was known then, rather than as later revised. Pass it for any
+   * historical/validation work on a REVISED series (CPIAUCSL, GDP, PAYEMS,
+   * UNRATE). Omit it for daily market and rate series, which are not revised,
+   * and for the live path.
+   *
+   * Without it, a backfill of 2008 sees both today's revised figures AND
+   * observations that were not published until weeks after the date being
+   * scored. Measured effect on the 2008 window: 28.0% Risk-Off point-in-time
+   * versus 60.6% latest-vintage — the single largest bias found in Phase B.
    */
   async fetchSeriesByDateRange(
     seriesId: CompassFredSeriesId,
     startDate: Date,
     endDate: Date,
+    asOfDate?: Date,
   ): Promise<CompassFredObservation[]> {
+    const realtime = asOfDate ? formatYmd(asOfDate) : undefined;
     const result = await fredClient.getSeriesObservations({
       seriesId,
       observationStart: formatYmd(startDate),
       observationEnd: formatYmd(endDate),
+      ...(realtime ? { realtimeStart: realtime, realtimeEnd: realtime } : {}),
     });
 
     const mapped: CompassFredObservation[] = result.observations.map((o) => ({

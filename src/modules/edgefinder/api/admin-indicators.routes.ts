@@ -5,6 +5,11 @@ import { prisma } from '@core/db/prisma';
 import { AppError } from '@core/middleware/error-handler';
 import { collapseToLatestReleasePerIndicator } from '@core/repositories/latest-release-by-indicator';
 import { findOverdueByIndicatorCodes } from '@modules/edgefinder/services/overdue-resolver';
+import {
+  isRateDecisionCode,
+  rateRangeFromMetadata,
+  rateRangeMidpoint,
+} from '../services/rate-decision.helpers';
 
 export const adminIndicatorsRouter = Router();
 
@@ -280,6 +285,11 @@ adminIndicatorsRouter.get(
         },
       });
 
+      // Rate decisions store levels in the three columns like everything else,
+      // so nothing extra is needed to display them. What still has no column
+      // is the announced target range, which the entry card offers for the
+      // banks that publish one — that is all this block carries.
+      const isRateDecision = isRateDecisionCode(indicator.code);
       const data = dataPoints.map((dp) => ({
         id: dp.id,
         observationDate: dp.observationDate.toISOString().slice(0, 10),
@@ -288,6 +298,16 @@ adminIndicatorsRouter.get(
         value: Number(dp.value),
         forecastValue: dp.forecastValue !== null ? Number(dp.forecastValue) : null,
         previousValue: dp.previousValue !== null ? Number(dp.previousValue) : null,
+        rate: isRateDecision
+          ? (() => {
+              const range = rateRangeFromMetadata(dp.sourceMetadata);
+              return {
+                rangeLower: range.lower,
+                rangeUpper: range.upper,
+                rangeMidpoint: rateRangeMidpoint(range),
+              };
+            })()
+          : null,
         isCurrent: dp.isCurrent,
         source: dp.source,
         dataQualityFlag: dp.dataQualityFlag,

@@ -11,6 +11,7 @@ import {
   type ValidationWindowName,
 } from '@modules/edgefinder/services/compass/validation/validation-windows.config';
 import { backfillWindow } from '@modules/edgefinder/services/compass/validation/historical-backfill.service';
+import { orderedCompassInputs } from '@modules/edgefinder/services/compass/compass-input-registry';
 import {
   runValidation,
   getMostRecentReport,
@@ -144,9 +145,14 @@ adminValidationRouter.get(
             }),
           ]);
 
-          // 6 inputs per trading day = expected total
-          const expectedRows = tradingDaysExpected * 6;
-          const tradingDaysComplete = Math.floor(inputCount / 6);
+          // Phase C: this was hardcoded to 6 inputs per trading day while the
+          // backfill had grown to ingest 8, so /status could never report
+          // `completed` — it capped at ~75% forever. The count now comes from
+          // the single input registry, so adding an input can no longer silently
+          // desynchronise this endpoint.
+          const inputsPerDay = orderedCompassInputs().length;
+          const expectedRows = tradingDaysExpected * inputsPerDay;
+          const tradingDaysComplete = Math.floor(inputCount / inputsPerDay);
 
           let backfillStatus:
             | 'not_started'

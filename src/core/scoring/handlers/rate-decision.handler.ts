@@ -6,16 +6,20 @@ import { findLatestRelease } from '../helpers/latest-release';
  * surprise versus forecast, never absolute level — the forecast already
  * prices in everything the market knows. Scoring the absolute action meant
  * an entirely expected hike scored +1 and sat there for six weeks despite
- * changing nothing anyone didn't already know.
+ * changing nothing anyone didn't already know. That is unchanged.
  *
- * Both `dp.value` and `dp.forecastValue` are bps change versus the prior
- * decision, in the SAME unit — see rate-decision.helpers.ts /
- * manual-data-entry.service.ts / forex-factory-indicator.service.ts, which
- * all convert an entered/published absolute rate level into a bps delta
- * against the same prior-rate baseline before storing either column. Diffing
- * them directly (no unit conversion here) is what keeps this comparison
- * honest — see recon note on why storing them in different units would be
- * the likely way this silently breaks.
+ * What changed is the unit. `dp.value` and `dp.forecastValue` are now the
+ * announced and expected rate LEVELS, in percentage points, the same as every
+ * other indicator in the system stores. They used to be bps changes against
+ * the prior decision, which cost a great deal and bought nothing here, because
+ * the shared baseline cancels out of the subtraction:
+ *
+ *     (actual - prior) - (forecast - prior)  ==  actual - forecast
+ *
+ * The surprise this handler computes is therefore identical; only its unit
+ * moved from basis points to percentage points, and the tolerance moved with
+ * it. See rate-decision.helpers.ts for the full reasoning and what the old
+ * shape broke.
  *
  * Target:
  *   More hawkish than expected (actual bps > forecast bps):  +1
@@ -42,36 +46,45 @@ export async function rateDecisionHandler(ctx: ScoringContext): Promise<ScoringR
     };
   }
 
-  const actualBps = Number(dp.value);
-  const forecastBps = dp.forecastValue === null ? null : Number(dp.forecastValue);
+  const actualLevel = Number(dp.value);
+  const forecastLevel = dp.forecastValue === null ? null : Number(dp.forecastValue);
+  const priorLevel = dp.previousValue === null ? null : Number(dp.previousValue);
 
   // decision is the absolute action — retained for display/metadata only.
   // It no longer drives the score (that's exactly the defect being fixed).
-  let decision: 'HIKE' | 'CUT' | 'HOLD';
-  if (actualBps > 0) decision = 'HIKE';
-  else if (actualBps < 0) decision = 'CUT';
+  //
+  // Null on a first release. The old shape reported HOLD there, because it had
+  // hardcoded the bps change to 0 when there was no prior rate to diff against
+  // — so "we don't know what this moved from" and "it didn't move" were the
+  // same value. They are different facts and are now reported as such.
+  let decision: 'HIKE' | 'CUT' | 'HOLD' | null;
+  if (priorLevel === null) decision = null;
+  else if (actualLevel > priorLevel) decision = 'HIKE';
+  else if (actualLevel < priorLevel) decision = 'CUT';
   else decision = 'HOLD';
 
-  if (forecastBps === null) {
+  if (forecastLevel === null) {
     return {
       kind: 'insufficient_data',
       reason: 'No expected rate on file for this decision — cannot score surprise',
       details: {
         indicatorCode: ctx.indicatorCode,
         dataPointId: dp.id,
-        bps_change: actualBps,
+        rate_level: actualLevel,
+        prior_rate_level: priorLevel,
         decision,
       },
     };
   }
 
-  // Tolerance in bps. Both values are computed as (level - priorLevel) * 100
-  // in floating point before being rounded to Decimal(20,6) on write, so the
-  // only "noise" possible here is sub-1e-9-bp float error — 0.01bp is
-  // generously above that floor while staying far below the smallest real
-  // central-bank increment (1bp), so no genuine surprise gets swallowed.
-  const tolerance = 0.01;
-  const surprise = Math.round((actualBps - forecastBps) * 1e6) / 1e6;
+  // Tolerance in percentage points, exactly equivalent to the 0.01bp this used
+  // while the columns held basis points: 0.01bp == 0.0001pp. Both values are
+  // stored as entered and rounded to Decimal(20,6), so the only noise possible
+  // is sub-1e-9 float error — the tolerance sits generously above that floor
+  // while staying far below the smallest real central-bank increment (0.01pp),
+  // so no genuine surprise is swallowed.
+  const tolerance = 0.0001;
+  const surprise = Math.round((actualLevel - forecastLevel) * 1e6) / 1e6;
   const tol = Math.round(tolerance * 1e6) / 1e6;
 
   let score: Score;
@@ -92,9 +105,13 @@ export async function rateDecisionHandler(ctx: ScoringContext): Promise<ScoringR
     score,
     flags: [],
     metadata: {
-      bps_change: actualBps,
-      forecast_bps_change: forecastBps,
-      surprise_bps: surprise,
+      rate_level: actualLevel,
+      expected_rate_level: forecastLevel,
+      prior_rate_level: priorLevel,
+      // Reported in bps as well as pp: a 25bp move is how a rate surprise is
+      // spoken about, and this metadata is read by humans.
+      surprise_pp: surprise,
+      surprise_bps: Math.round(surprise * 100 * 1e6) / 1e6,
       tolerance,
       decision,
       surprise_direction: surpriseDirection,

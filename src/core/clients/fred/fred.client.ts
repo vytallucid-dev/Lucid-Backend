@@ -73,7 +73,8 @@ class FredClient {
    * Returns raw FRED response observations + metadata for traceability.
    */
   async getSeriesObservations(options: FredFetchOptions): Promise<FredFetchResult> {
-    const { seriesId, observationStart, observationEnd, limit } = options;
+    const { seriesId, observationStart, observationEnd, limit, realtimeStart, realtimeEnd } =
+      options;
 
     const params: Record<string, string | number> = {
       series_id: seriesId,
@@ -81,6 +82,11 @@ class FredClient {
     if (observationStart) params.observation_start = observationStart;
     if (observationEnd) params.observation_end = observationEnd;
     if (limit !== undefined) params.limit = limit;
+    // Phase C: ALFRED vintage bounds. Only sent when supplied, so existing
+    // callers are unaffected. See FredFetchOptions for why observation_end
+    // alone is not point-in-time.
+    if (realtimeStart) params.realtime_start = realtimeStart;
+    if (realtimeEnd) params.realtime_end = realtimeEnd;
 
     const fetchedAt = new Date();
     const requestUrl = `${FRED_BASE_URL}/series/observations`;

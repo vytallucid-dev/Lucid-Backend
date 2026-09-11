@@ -13,6 +13,8 @@ export interface UpsertCompassInputInput {
   subChecks: Prisma.InputJsonValue | null;
   source: CompassSource;
   isValidation?: boolean;
+  /** Phase C — which compass_config produced this row. */
+  configVersionLabel?: string;
 }
 
 export interface UpsertCompassInputResult {
@@ -94,6 +96,7 @@ export const compassInputsRepository = {
             colorBand: input.colorBand,
             subChecks: input.subChecks ?? Prisma.JsonNull,
             source: input.source,
+            configVersionLabel: input.configVersionLabel ?? null,
             computedAt: new Date(),
           },
         });
@@ -110,6 +113,7 @@ export const compassInputsRepository = {
           subChecks: input.subChecks ?? Prisma.JsonNull,
           source: input.source,
           isValidation,
+          configVersionLabel: input.configVersionLabel ?? null,
         },
       });
       return { id: inserted.id, action: 'inserted' as const };

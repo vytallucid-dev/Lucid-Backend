@@ -64,6 +64,7 @@ export async function ingestDxyTrendInput(
         symbol: SYMBOL,
       },
       source: 'eodhd',
+      configVersionLabel: config.versionLabel,
       isValidation,
     });
     logger.warn(
@@ -88,6 +89,7 @@ export async function ingestDxyTrendInput(
         symbol: SYMBOL,
       },
       source: 'eodhd',
+      configVersionLabel: config.versionLabel,
       isValidation,
     });
     logger.warn(
@@ -125,6 +127,7 @@ export async function ingestDxyTrendInput(
       stale: false,
     },
     source: 'eodhd',
+    configVersionLabel: config.versionLabel,
     isValidation,
   });
 
