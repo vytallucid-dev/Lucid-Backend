@@ -269,16 +269,26 @@ describe('Companion events — primary/companion designation', () => {
   // Documents the three NOT-companion multi-title codes found by the full
   // audit, so a future edit doesn't accidentally "fix" them into companion
   // pairs without re-litigating why they aren't.
-  it('US_PCE_YOY: y/y is primary; m/m is NOT marked companion (flagged mis-registration, not a companion pair)', () => {
-    expect(resolveEvent('USD', 'Core PCE Price Index y/y')?.isPrimary).toBe(true);
-    // Deliberately still isPrimary: true — see the mapping file's inline
-    // comment. Marking it companion() would misrepresent it as solved.
-    expect(resolveEvent('USD', 'Core PCE Price Index m/m')?.isPrimary).toBe(true);
+  it('US_PCE_YOY: only the y/y title maps; the m/m mis-registration is removed', () => {
+    expect(resolveEvent('USD', 'Core PCE Price Index y/y')).toEqual({
+      code: 'US_PCE_YOY',
+      variant: null,
+      isPrimary: true,
+    });
+    expect(resolveEvent('USD', 'Core PCE Price Index m/m')).toBeNull();
   });
 
-  it('EU_CPI_YOY: both titles remain isPrimary (flash/final ladder gap, not a companion pair)', () => {
-    expect(resolveEvent('EUR', 'Final CPI y/y')?.isPrimary).toBe(true);
-    expect(resolveEvent('EUR', 'CPI Flash Estimate y/y')?.isPrimary).toBe(true);
+  it('EU_CPI_YOY: flash and final are rungs of one ladder, so Final cannot overwrite Flash', () => {
+    expect(resolveEvent('EUR', 'CPI Flash Estimate y/y')).toEqual({
+      code: 'EU_CPI_YOY',
+      variant: 'flash',
+      isPrimary: true,
+    });
+    expect(resolveEvent('EUR', 'Final CPI y/y')).toEqual({
+      code: 'EU_CPI_YOY',
+      variant: 'final',
+      isPrimary: true,
+    });
   });
 
   it('CN_CAIXIN_PMI_MFG: both spellings remain isPrimary (never co-occur, no companion needed)', () => {
@@ -357,5 +367,52 @@ describe('Companion events — full-table audit invariant', () => {
     );
     expect(usAdpTitles).toHaveLength(1);
     expect(usAdpTitles[0].isPrimary).toBe(true);
+  });
+});
+
+describe('User measure rules (2026-09-13) — alert-only and remapped titles', () => {
+  // Forex Factory publishes a different measure than the tracked series for
+  // these titles, and no title carrying the tracked measure. They must still
+  // link the calendar row (alerts, overdue) but never write FF's number.
+  const ALERT_ONLY: Array<[string, string, string]> = [
+    ['USD', 'PPI m/m', 'US_PPI_MOM'],
+    ['EUR', 'PPI m/m', 'EU_PPI_MOM'],
+    ['GBP', 'PPI Output m/m', 'UK_PPI_MOM'],
+    ['JPY', 'Retail Sales y/y', 'JP_RETAIL_YOY'],
+    ['JPY', 'National Core CPI y/y', 'JP_CPI_YOY'],
+    ['JPY', 'Tokyo Core CPI y/y', 'JP_TOKYO_CPI_YOY'],
+    ['AUD', 'PPI q/q', 'AU_PPI_YOY'],
+    ['AUD', 'Westpac Consumer Sentiment', 'AU_CONSCONF'],
+  ];
+
+  it.each(ALERT_ONLY)('%s :: "%s" links %s for alerts but is alert-only', (country, title, code) => {
+    expect(resolveEvent(country, title)).toEqual({ code, variant: null, isPrimary: true, alertOnly: true });
+  });
+
+  it('exactly these eight registrations are alert-only; every other title writes values', async () => {
+    const { FF_EVENT_TO_INDICATOR } = await import(
+      '@modules/edgefinder/services/forex-factory-event-mapping'
+    );
+    const alertOnly: string[] = [];
+    for (const [country, titles] of Object.entries(FF_EVENT_TO_INDICATOR)) {
+      for (const [title, resolution] of Object.entries(titles)) {
+        if (resolution.alertOnly) alertOnly.push(`${country}::${title}`);
+      }
+    }
+    expect(alertOnly.sort()).toEqual(ALERT_ONLY.map(([c, t]) => `${c}::${t}`).sort());
+  });
+
+  it('US_CB_CONSCONF tracks Michigan prelim → final; the Conference Board title is unmapped', () => {
+    expect(resolveEvent('USD', 'Prelim UoM Consumer Sentiment')).toEqual({
+      code: 'US_CB_CONSCONF',
+      variant: 'prelim',
+      isPrimary: true,
+    });
+    expect(resolveEvent('USD', 'Revised UoM Consumer Sentiment')).toEqual({
+      code: 'US_CB_CONSCONF',
+      variant: 'final',
+      isPrimary: true,
+    });
+    expect(resolveEvent('USD', 'CB Consumer Confidence')).toBeNull();
   });
 });

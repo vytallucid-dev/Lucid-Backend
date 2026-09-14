@@ -40,9 +40,11 @@
 //
 // The rules are stated in terms of the plan, not the instrument: side-of-entry
 // is decided by direction alone, so a new pair needs no entry here. Nothing in
-// this file reads pips, points or R magnitude, which is deliberate — a bound
-// written against 4-decimal forex would flag every index trade now that
-// instrument-scale.ts quotes indices and metals in whole points.
+// this file reads pips or points, which is deliberate — a bound written against
+// 4-decimal forex would flag every index trade now that instrument-scale.ts
+// quotes indices and metals in whole points. The one rule that reads R
+// (outcome coherence) reads it as a ratio of price distances, in which any
+// instrument's multiplier cancels.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Whether a failure stops the write everywhere, or only on create. */
@@ -285,6 +287,112 @@ export function checkPartialCoherence(
       );
 }
 
+/** A breakeven exit this far from entry, in R, is not a breakeven exit. */
+export const BE_MAX_ABS_R = 0.25;
+
+/**
+ * The outcome a fill records must agree with the R its prices produce.
+ *
+ * R is derived from the typed exit price; the P&L is typed separately and
+ * decides the outcome everywhere. Nothing else ties the two together, so a
+ * mistyped exit (a wrong big figure, the stop price stored on a TP exit, the
+ * target price left on a breakeven exit) silently corrupts every R-denominated
+ * statistic while the dollars stay right. This rule catches exactly that.
+ *
+ * R here is a RATIO of price distances — (exit − entry) ÷ |entry − stop|,
+ * lot-weighted across a partial — so the instrument's pip multiplier cancels
+ * and no instrument scale is read. Advisory: the numbers compute, they are
+ * just wrong, and correcting them requires saving the row.
+ */
+export function checkOutcomeCoherence(input: {
+  isClosed: boolean;
+  direction: string;
+  plannedSl: number;
+  entryPrice: number;
+  mainExitPrice: number | null;
+  partialExitPrice: number | null;
+  partialExitLotPct: number | null;
+  exitType: string;
+  /** The fill's typed P&L; null when the user entered none. */
+  netPnl: number | null;
+}): FieldProblem | null {
+  if (!input.isClosed || input.mainExitPrice == null) return null;
+  const risk = Math.abs(input.entryPrice - input.plannedSl);
+  if (!(risk > 0)) return null; // zero risk is the stop-side rule's (blocking) problem
+  const sign = input.direction === 'Buy' ? 1 : -1;
+  const legR = (exit: number): number => (sign * (exit - input.entryPrice)) / risk;
+  const hasPartial = input.partialExitPrice != null && input.partialExitLotPct != null && input.partialExitLotPct > 0;
+  const pFrac = hasPartial ? Math.min(Math.max(input.partialExitLotPct as number, 0), 100) / 100 : 0;
+  const r = hasPartial
+    ? legR(input.partialExitPrice as number) * pFrac + legR(input.mainExitPrice) * (1 - pFrac)
+    : legR(input.mainExitPrice);
+  const rText = `${r >= 0 ? '+' : ''}${r.toFixed(2)}R`;
+  const pnl = input.netPnl;
+
+  if (pnl != null && ((pnl > 0 && r < 0) || (pnl < 0 && r > 0))) {
+    return advisory(
+      'main_exit_price',
+      `Exit price ${price(input.mainExitPrice)} gives ${rText}, but this fill's P&L is ${pnl > 0 ? '+' : ''}${pnl}; one of them is wrong.` +
+        (input.exitType === 'TP' ? ' For a TP exit the exit price is usually the main TP.' : ''),
+    );
+  }
+  if (input.exitType === 'BE' && Math.abs(r) > BE_MAX_ABS_R) {
+    return advisory(
+      'main_exit_price',
+      `A breakeven exit should leave price near entry (${price(input.entryPrice)}); the stored exit ${price(input.mainExitPrice)} gives ${rText}.`,
+    );
+  }
+  if (input.exitType === 'TP' && r <= 0) {
+    return advisory(
+      'exit_type',
+      `Exit type is TP, but exit price ${price(input.mainExitPrice)} gives ${rText} — a target exit should be a gain. Check the exit price or the exit type.`,
+    );
+  }
+  if (input.exitType === 'SL' && r >= 0) {
+    return advisory(
+      'exit_type',
+      `Exit type is SL, but exit price ${price(input.mainExitPrice)} gives ${rText} — a stop-out should be a loss. Check the exit price or the exit type.`,
+    );
+  }
+  return null;
+}
+
+/**
+ * Excursion prices must sit on the right side of the fill's own entry: the best
+ * price reached (MFE) cannot be worse than the entry, and the worst (MAE)
+ * cannot be better. For a Buy that is mfe ≥ entry and mae ≤ entry; mirrored
+ * for a Sell. Advisory — both are read off a chart by hand, and a stored row
+ * that breaks the rule must stay correctable by saving it.
+ */
+export function checkExcursion(input: {
+  direction: string;
+  entryPrice: number;
+  mfePrice: number | null;
+  maePrice: number | null;
+}): FieldProblem[] {
+  const problems: FieldProblem[] = [];
+  const isBuy = input.direction === 'Buy';
+  const entry = input.entryPrice;
+  const { mfePrice: mfe, maePrice: mae } = input;
+  if (mfe != null && (isBuy ? mfe < entry : mfe > entry)) {
+    problems.push(
+      advisory(
+        'mfe_price',
+        `The best price reached (MFE) must be ${isBuy ? 'at or above' : 'at or below'} the entry for a ${input.direction} — entry ${price(entry)}, MFE ${price(mfe)}.`,
+      ),
+    );
+  }
+  if (mae != null && (isBuy ? mae > entry : mae < entry)) {
+    problems.push(
+      advisory(
+        'mae_price',
+        `The worst price reached (MAE) must be ${isBuy ? 'at or below' : 'at or above'} the entry for a ${input.direction} — entry ${price(entry)}, MAE ${price(mae)}.`,
+      ),
+    );
+  }
+  return problems;
+}
+
 /**
  * Every plan-level rule for one idea, in field order. Used by the create
  * schema, re-run in the service on update against the merged values, and run
@@ -326,6 +434,26 @@ export function checkExecution(input: {
   partialExitLotPct: number | null;
   dateClosed: Date | null;
   dateOpened: Date | null;
+  /**
+   * What the outcome-coherence rule needs beyond the fill body: the idea's
+   * direction and stop, and the fill's entry, exit type and typed P&L. Omit it
+   * and that rule is skipped (a caller checking only one field, say).
+   */
+  outcome?: {
+    direction: string;
+    plannedSl: number;
+    entryPrice: number;
+    exitType: string;
+    netPnl: number | null;
+  };
+  /** The idea's direction and the fill's entry and excursion prices. Omit it
+   * and the excursion rule is skipped. */
+  excursion?: {
+    direction: string;
+    entryPrice: number;
+    mfePrice: number | null;
+    maePrice: number | null;
+  };
 }, now = new Date()): FieldProblem[] {
   const problems: FieldProblem[] = [];
   const push = (p: FieldProblem | null): void => { if (p) problems.push(p); };
@@ -337,6 +465,22 @@ export function checkExecution(input: {
     push(checkExitNotFuture(input.dateClosed, now));
     if (isRealDate(input.dateOpened)) push(checkExitAfterEntry(input.dateOpened, input.dateClosed));
   }
+  if (input.outcome) {
+    push(
+      checkOutcomeCoherence({
+        isClosed: input.isClosed,
+        direction: input.outcome.direction,
+        plannedSl: input.outcome.plannedSl,
+        entryPrice: input.outcome.entryPrice,
+        mainExitPrice: input.mainExitPrice,
+        partialExitPrice: input.partialExitPrice,
+        partialExitLotPct: input.partialExitLotPct,
+        exitType: input.outcome.exitType,
+        netPnl: input.outcome.netPnl,
+      }),
+    );
+  }
+  if (input.excursion) problems.push(...checkExcursion(input.excursion));
 
   return problems;
 }
@@ -390,6 +534,13 @@ export function checkTradeIntegrity(
     partialExitPrice: number | null;
     partialExitLotPct: number | null;
     dateClosed: Date | null;
+    /** The fill's actual entry, exit type and stored P&L — for outcome coherence. */
+    entryPrice?: number;
+    exitType?: string;
+    blendedPnl?: number;
+    /** Excursion prices, when recorded. */
+    mfePrice?: number | null;
+    maePrice?: number | null;
   }>,
   now = new Date(),
 ): TradeIntegrity {
@@ -415,6 +566,25 @@ export function checkTradeIntegrity(
         partialExitLotPct: e.partialExitLotPct,
         dateClosed: e.dateClosed,
         dateOpened: trade.dateOpened,
+        outcome:
+          e.entryPrice != null && e.exitType != null
+            ? {
+                direction: trade.direction,
+                plannedSl: trade.plannedSl,
+                entryPrice: e.entryPrice,
+                exitType: e.exitType,
+                netPnl: e.blendedPnl ?? null,
+              }
+            : undefined,
+        excursion:
+          e.entryPrice != null
+            ? {
+                direction: trade.direction,
+                entryPrice: e.entryPrice,
+                mfePrice: e.mfePrice ?? null,
+                maePrice: e.maePrice ?? null,
+              }
+            : undefined,
       },
       now,
     );

@@ -366,7 +366,7 @@ export const PAIR_ROW_TO_SLOT: Record<string, keyof typeof EMPTY_INDICATOR_SLOTS
   // Jobs -> JOBS MARKET, Inflation -> INFLATION, Growth -> ECONOMIC GROWTH.
   'Labor Cash Earnings': 'cashEarnings',
   'AU Employment Change': 'auEmpl',
-  'Tokyo Core CPI': 'tokyoCpi',
+  'Tokyo CPI': 'tokyoCpi',
   'China Caixin Mfg PMI': 'caixinPmi',
 };
 

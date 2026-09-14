@@ -130,9 +130,41 @@ export interface ExecutionDto {
   oracle_score_at_exit: number | null;
   oracle_score_exit_date: string | null;
   oracle_score_exit_captured_at: string | null;
+  // Excursion, entered by hand at close. Null means "not recorded", never zero.
+  mfe_price: number | null;
+  mae_price: number | null;
+  returned_to_entry_after_mfe: boolean | null;
+  // The same prices in R against the idea's stop, measured like blended_rr from
+  // this fill's own entry: how far the fill ran for (MFE) and against (MAE).
+  // Null when the price is not recorded.
+  mfe_r: number | null;
+  mae_r: number | null;
+  // Realised R ÷ MFE R — the share of the best available move the exit kept.
+  // Null unless the fill is closed and its MFE is in profit.
+  exit_efficiency: number | null;
 }
 
-export function toExecutionDto(e: Execution): ExecutionDto {
+/** What excursion R needs from the idea: its direction and planned stop. */
+interface ExcursionPlan {
+  direction: string;
+  plannedSl: number;
+}
+
+function excursionR(at: number | null, entry: number, plan: ExcursionPlan | undefined): number | null {
+  if (at == null || !plan) return null;
+  const risk = Math.abs(entry - plan.plannedSl);
+  if (!(risk > 0)) return null;
+  const sign = plan.direction === 'Buy' ? 1 : -1;
+  return (sign * (at - entry)) / risk;
+}
+
+export function toExecutionDto(e: Execution, plan?: ExcursionPlan): ExecutionDto {
+  const entry = num(e.entryPrice) ?? 0;
+  const mfePrice = num(e.mfePrice);
+  const maePrice = num(e.maePrice);
+  const blendedRr = num(e.blendedRr) ?? 0;
+  const mfeR = excursionR(mfePrice, entry, plan);
+  const maeR = excursionR(maePrice, entry, plan);
   return {
     id: e.id,
     trade_id: e.tradeId,
@@ -154,6 +186,12 @@ export function toExecutionDto(e: Execution): ExecutionDto {
     oracle_score_exit_captured_at: e.oracleScoreExitCapturedAt
       ? e.oracleScoreExitCapturedAt.toISOString()
       : null,
+    mfe_price: mfePrice,
+    mae_price: maePrice,
+    returned_to_entry_after_mfe: e.returnedToEntryAfterMfe ?? null,
+    mfe_r: mfeR == null ? null : round2(mfeR),
+    mae_r: maeR == null ? null : round2(maeR),
+    exit_efficiency: e.dateClosed && mfeR != null && mfeR > 0 ? round2(blendedRr / mfeR) : null,
   };
 }
 
@@ -184,6 +222,12 @@ export interface TradeDto {
   oracle_score_entry_date: string | null;
   oracle_score_entry_captured_at: string | null;
   oracle_score_entry_source: 'snapshot' | 'legacy' | 'manual' | null;
+  // The Compass regime in effect on the entry date, frozen at write time like
+  // the Oracle score. `date` is the classification the regime was read from.
+  // Null when no classification existed that early.
+  compass_regime_at_entry: string | null;
+  compass_regime_entry_date: string | null;
+  compass_regime_entry_source: 'snapshot' | 'archive' | 'manual' | null;
   // R the plan was aiming at: planned reward / planned risk. Derived here, on
   // every read, from the three planned prices — never stored, so it cannot go
   // stale against them. Null when the plan has no target or no risk.
@@ -196,6 +240,9 @@ export interface TradeDto {
   // and denominator both.
   integrity: TradeIntegrityDto;
   screenshots: string[];
+  // Rules broken on this idea, as tags from the fixed vocabulary. Empty =
+  // nothing recorded as broken.
+  rule_breaks: string[];
   psychology: string;
   notes: string;
   pre_trade_memory: null;
@@ -250,6 +297,11 @@ function toIntegrityDto(t: TradeWithExecutions, executions: Execution[]): TradeI
       partialExitPrice: num(e.partialExitPrice),
       partialExitLotPct: num(e.partialExitLotPct),
       dateClosed: e.dateClosed,
+      entryPrice: num(e.entryPrice) ?? undefined,
+      exitType: e.exitType,
+      blendedPnl: num(e.blendedPnl) ?? undefined,
+      mfePrice: num(e.mfePrice),
+      maePrice: num(e.maePrice),
     })),
   );
   return {
@@ -287,6 +339,9 @@ export function toTradeDto(
       ? t.oracleScoreEntryCapturedAt.toISOString()
       : null,
     oracle_score_entry_source: t.oracleScoreEntrySource as TradeDto['oracle_score_entry_source'],
+    compass_regime_at_entry: t.compassRegimeAtEntry ?? null,
+    compass_regime_entry_date: t.compassRegimeEntryDate ? ymd(t.compassRegimeEntryDate) : null,
+    compass_regime_entry_source: (t.compassRegimeEntrySource ?? null) as TradeDto['compass_regime_entry_source'],
     expected_rr: computeExpectedRr({
       direction: t.direction,
       entryPrice: num(t.plannedEntry) ?? 0,
@@ -295,6 +350,7 @@ export function toTradeDto(
     }),
     integrity: toIntegrityDto(t, allExecutions),
     screenshots: t.screenshots,
+    rule_breaks: t.ruleBreaks ?? [],
     psychology: t.psychology ?? '',
     notes: t.notes ?? '',
     pre_trade_memory: null,
@@ -303,7 +359,7 @@ export function toTradeDto(
     // is the idea's outcome for edge statistics (see lib/stats.ts frontend).
     executions: [...t.executions]
       .sort((a, b) => (a.isPrimary === b.isPrimary ? 0 : a.isPrimary ? -1 : 1))
-      .map(toExecutionDto),
+      .map((e) => toExecutionDto(e, { direction: t.direction, plannedSl: num(t.plannedSl) ?? 0 })),
   };
 }
 

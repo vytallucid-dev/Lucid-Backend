@@ -125,12 +125,25 @@ export function computeExpectedRr(input: {
 /**
  * Auto-tags the trading session from the open time (IST clock), mirroring the
  * frontend's getSessionFromTime so sessions match what the UI would derive.
+ *
+ * Windows (IST), contiguous and covering the whole day:
+ *   Asian             05:30 – 11:30
+ *   London            11:30 – 17:30   (includes the pre-London build-up)
+ *   London-NY Overlap 17:30 – 21:30
+ *   New York          21:30 – 05:30   (wraps midnight)
+ *
+ * Until 2026-09-12 London started at 13:30, and the 11:30–13:30 gap fell
+ * through to "New York" — six logged trades opened in that gap were tagged New
+ * York. Assigning the gap to London is the journal plan's default (decision
+ * D9, unconfirmed); stored rows are NOT rewritten by this change. A stored
+ * trade picks up the new window only when it is next edited (updateTrade
+ * re-derives the session), or if scripts/recompute-sessions.ts is applied.
  */
 export function sessionFromDate(d: Date): string {
   const istHours = d.getUTCHours() + d.getUTCMinutes() / 60 + 5.5;
   const adjusted = istHours >= 24 ? istHours - 24 : istHours;
   if (adjusted >= 5.5 && adjusted < 11.5) return 'Asian';
-  if (adjusted >= 13.5 && adjusted < 17.5) return 'London';
+  if (adjusted >= 11.5 && adjusted < 17.5) return 'London';
   if (adjusted >= 17.5 && adjusted < 21.5) return 'London-NY Overlap';
   return 'New York';
 }

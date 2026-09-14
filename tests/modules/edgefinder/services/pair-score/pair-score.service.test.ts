@@ -289,6 +289,14 @@ describe('assemblePairScore — pair COT scoring', () => {
     const r = await assemblePairScore('EURUSD', DATE);
     expect(r.pairCotScore).toBe(-1);
   });
+
+  it('only reads COT reports released by the score date', async () => {
+    setupScoreMap({});
+    await assemblePairScore('EURUSD', DATE);
+    const calls = prismaMock.cotData.findFirst.mock.calls as Array<[{ where: { releaseDate?: unknown } }]>;
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [args] of calls) expect(args.where.releaseDate).toEqual({ lte: DATE });
+  });
 });
 
 describe('assemblePairScore — Compass Override 5', () => {

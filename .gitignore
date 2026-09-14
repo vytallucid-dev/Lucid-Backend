@@ -10,3 +10,8 @@ coverage/
 .idea/
 .claude
 prisma/migrations/dev.db*
+
+# Database recovery 2026-09 — production data captures and logs; never commit
+recovery/dumps/
+recovery/snapshots/
+recovery/logs/

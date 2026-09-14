@@ -211,6 +211,37 @@ describe('fetchForexFactoryWeek', () => {
     mockedCalendarUpsert.mockResolvedValue({ action: 'inserted', event: {} });
   });
 
+  it('alert-only title with an actual: stored and counted as mapped, but no value is written', async () => {
+    // "PPI m/m" is Forex Factory's measure; US_PPI_MOM tracks PPI YoY (user
+    // rule 2026-09-13). Writing FF's number would mix two measures in one series.
+    mockedGetCalendar.mockResolvedValue({
+      events: [
+        makeEvent({
+          title: 'PPI m/m',
+          country: 'USD',
+          actual: '0.3%',
+          forecast: '0.2%',
+          previous: '0.1%',
+        }),
+      ],
+      requestUrl: '',
+      fetchedAt: new Date(),
+      responseSizeBytes: 50,
+    });
+    mockedFindMany.mockResolvedValue([{ id: 'ind-us-ppi', code: 'US_PPI_MOM' }]);
+
+    const result = await fetchForexFactoryWeek('manual', null);
+
+    expect(mockedCalendarUpsert).toHaveBeenCalledTimes(1);
+    expect(mockedCalendarUpsert.mock.calls[0][0].indicatorCode).toBe('US_PPI_MOM');
+    expect(mockedUpsert).not.toHaveBeenCalled();
+    expect(result.mappedCount).toBe(1);
+    expect(result.mappedDeferredCount).toBe(0);
+    expect(result.rowsInserted).toBe(0);
+    expect(result.status).toBe('success');
+    expect(mockedLogComplete.mock.calls[0][0].metadata.alertOnlyCount).toBe(1);
+  });
+
   it('upserts a mapped regular event with parsed actual/forecast/previous', async () => {
     mockedGetCalendar.mockResolvedValue({
       events: [

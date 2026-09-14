@@ -4,6 +4,7 @@ import { AppError } from '@core/middleware/error-handler';
 import { toTradeDto, type TradeDto, type TradeWithExecutions } from './serialize';
 import { computeTradeMetrics, sessionFromDate, type TradeMetrics } from './trade-metrics';
 import { sameScoreDate, snapshotOracleScore, type OracleScoreSource } from './oracle-snapshot';
+import { snapshotCompassRegime } from './regime-snapshot';
 import {
   blockingProblems,
   checkExecution,
@@ -12,6 +13,7 @@ import {
   type WritePath,
 } from './trade-validation';
 import { isForexPairSymbol } from './instrument-scale';
+import { PSYCHOLOGY_STATES } from '../types/trading.types';
 import type {
   CreateTradeInput,
   UpdateTradeInput,
@@ -27,6 +29,24 @@ function dec(n: number): Prisma.Decimal {
 
 function decOrNull(n: number | null | undefined): Prisma.Decimal | null {
   return n == null ? null : new Prisma.Decimal(n);
+}
+
+/** Rule-break tags, each once, in the order chosen. */
+function uniqueTags(tags: readonly string[] | undefined): string[] {
+  return [...new Set(tags ?? [])];
+}
+
+/**
+ * Psychology is a chip from the fixed list — or, on edit, exactly the value
+ * already stored, so a trade logged with free text before the chips existed
+ * still re-saves unchanged. Anything else is refused.
+ */
+function assertPsychology(value: string | null, stored: string | null): void {
+  if (value == null || value === stored || (PSYCHOLOGY_STATES as readonly string[]).includes(value)) return;
+  const message = `Psychology must be one of: ${PSYCHOLOGY_STATES.join(', ')}.`;
+  throw new AppError(400, message, 'VALIDATION_ERROR', {
+    problems: [{ field: 'psychology', message, severity: 'blocking' }],
+  });
 }
 
 /**
@@ -259,6 +279,10 @@ export async function createTrade(userId: string, input: CreateTradeInput): Prom
       ? manualEntrySnapshot(input.oracle_score_at_entry)
       : await takeEntrySnapshot(input.pair, dateOpened);
 
+  // The Compass regime on the entry date — captured once, like the Oracle
+  // snapshot, and never re-read.
+  const regimeSnapshot = await snapshotCompassRegime(dateOpened);
+
   const executionRows = await Promise.all(
     input.executions.map(async (ex, idx) => {
       const isClosed = ex.is_closed && ex.main_exit_price != null;
@@ -292,6 +316,11 @@ export async function createTrade(userId: string, input: CreateTradeInput): Prom
         // no figure entered yet → 0. Never derived from prices.
         blendedPnl: dec(isClosed ? (ex.net_pnl ?? 0) : 0),
         blendedRr: dec(metrics.blendedRr),
+        // Excursion belongs to a closed fill; the toggle only means something
+        // once an MFE is recorded.
+        mfePrice: isClosed ? decOrNull(ex.mfe_price) : null,
+        maePrice: isClosed ? decOrNull(ex.mae_price) : null,
+        returnedToEntryAfterMfe: isClosed && ex.mfe_price != null ? (ex.returned_to_entry_after_mfe ?? null) : null,
         ...exitSnapshot,
       };
     }),
@@ -314,7 +343,9 @@ export async function createTrade(userId: string, input: CreateTradeInput): Prom
         screenshots: input.screenshots ?? [],
         psychology: input.psychology ?? null,
         notes: input.notes ?? null,
+        ruleBreaks: uniqueTags(input.rule_breaks),
         ...entrySnapshot,
+        ...regimeSnapshot,
       },
     });
     await tx.execution.createMany({
@@ -393,7 +424,11 @@ export async function updateTrade(
   if (input.planned_entry !== undefined) data.plannedEntry = dec(input.planned_entry);
   if (input.planned_first_tp !== undefined) data.plannedFirstTp = decOrNull(input.planned_first_tp);
   if (input.planned_main_tp !== undefined) data.plannedMainTp = dec(input.planned_main_tp);
-  if (input.psychology !== undefined) data.psychology = input.psychology;
+  if (input.psychology !== undefined) {
+    assertPsychology(input.psychology, existing.psychology);
+    data.psychology = input.psychology;
+  }
+  if (input.rule_breaks !== undefined) data.ruleBreaks = uniqueTags(input.rule_breaks);
   if (input.notes !== undefined) data.notes = input.notes;
   if (input.screenshots !== undefined) data.screenshots = input.screenshots;
 
@@ -412,6 +447,10 @@ export async function updateTrade(
   } else if (dateOpenedChanged || pairChanged) {
     Object.assign(data, await takeEntrySnapshot(pair, dateOpened));
   }
+  // The regime is market-wide, so only a changed entry date re-takes it. An
+  // unchanged date keeps what is stored — including nothing, for a trade logged
+  // before regime capture existed (no backfill, decision D4).
+  if (dateOpenedChanged) Object.assign(data, await snapshotCompassRegime(dateOpened));
 
   const updated = await prisma.$transaction(async (tx) => {
     const trade = await tx.trade.update({ where: { id }, data });
@@ -484,6 +523,21 @@ export async function addExecution(
       partialExitLotPct: input.partial_exit_lot_pct ?? null,
       dateClosed,
       dateOpened: trade.dateOpened,
+      outcome: {
+        direction: trade.direction,
+        plannedSl: trade.plannedSl.toNumber(),
+        entryPrice: input.entry_price,
+        exitType: input.exit_type,
+        netPnl: input.net_pnl ?? null,
+      },
+      excursion: isClosed
+        ? {
+            direction: trade.direction,
+            entryPrice: input.entry_price,
+            mfePrice: input.mfe_price ?? null,
+            maePrice: input.mae_price ?? null,
+          }
+        : undefined,
     }),
     'create',
   );
@@ -522,6 +576,10 @@ export async function addExecution(
         totalPips: dec(metrics.totalPips),
         blendedPnl: dec(isClosed ? (input.net_pnl ?? 0) : 0),
         blendedRr: dec(metrics.blendedRr),
+        mfePrice: isClosed ? decOrNull(input.mfe_price) : null,
+        maePrice: isClosed ? decOrNull(input.mae_price) : null,
+        returnedToEntryAfterMfe:
+          isClosed && input.mfe_price != null ? (input.returned_to_entry_after_mfe ?? null) : null,
         ...exitSnapshot,
       },
     });
@@ -574,6 +632,17 @@ export async function updateExecution(
 
   const effectiveClosed = isClosed && mainExitPrice != null;
 
+  // Excursion merges like every other field: a patch that omits it keeps what
+  // is stored (the detail page's Debrief card sends only these three).
+  const mfePrice =
+    input.mfe_price !== undefined ? input.mfe_price : execution.mfePrice ? execution.mfePrice.toNumber() : null;
+  const maePrice =
+    input.mae_price !== undefined ? input.mae_price : execution.maePrice ? execution.maePrice.toNumber() : null;
+  const returnedToEntryAfterMfe =
+    input.returned_to_entry_after_mfe !== undefined
+      ? input.returned_to_entry_after_mfe
+      : execution.returnedToEntryAfterMfe;
+
   let dateClosed: Date | null = execution.dateClosed;
   if (input.is_closed === false) dateClosed = null;
   else if (effectiveClosed) {
@@ -596,6 +665,19 @@ export async function updateExecution(
       partialExitLotPct: effectiveClosed ? partialExitLotPct : null,
       dateClosed,
       dateOpened: trade.dateOpened,
+      // Edit path: an incoherent outcome is flagged and saved, never refused,
+      // so a wrong exit price can be corrected in place.
+      outcome: {
+        direction: trade.direction,
+        plannedSl: trade.plannedSl.toNumber(),
+        entryPrice,
+        exitType: input.exit_type ?? execution.exitType,
+        netPnl: input.net_pnl !== undefined ? input.net_pnl : execution.blendedPnl.toNumber(),
+      },
+      // Edit path: an excursion on the wrong side of entry is flagged, not refused.
+      excursion: effectiveClosed
+        ? { direction: trade.direction, entryPrice, mfePrice, maePrice }
+        : undefined,
     }),
     'edit',
   );
@@ -638,6 +720,10 @@ export async function updateExecution(
     totalPips: dec(metrics.totalPips),
     blendedPnl: dec(resultPnl),
     blendedRr: dec(metrics.blendedRr),
+    // Reopening a fill clears its excursion, as it clears the exit prices.
+    mfePrice: effectiveClosed ? decOrNull(mfePrice) : null,
+    maePrice: effectiveClosed ? decOrNull(maePrice) : null,
+    returnedToEntryAfterMfe: effectiveClosed && mfePrice != null ? (returnedToEntryAfterMfe ?? null) : null,
     ...exitSnapshot,
   };
   if (input.account_id !== undefined) data.account = { connect: { id: input.account_id } };

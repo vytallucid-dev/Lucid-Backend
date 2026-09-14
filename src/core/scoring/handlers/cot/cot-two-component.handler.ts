@@ -56,6 +56,9 @@ export async function cotTwoComponentHandler(ctx: ScoringContext): Promise<Scori
       traderCategory,
       isCurrent: true,
       reportDate: { lte: ctx.observationDate },
+      // Only reports CFTC had released by the scoring date (Friday release of
+      // the Tuesday report). Identical live; correct for historical replays.
+      releaseDate: { lte: ctx.observationDate },
     },
     orderBy: { reportDate: 'desc' },
   });

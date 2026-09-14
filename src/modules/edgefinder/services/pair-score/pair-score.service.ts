@@ -132,6 +132,8 @@ async function loadCotChangeLabel(
       traderCategory,
       isCurrent: true,
       reportDate: { lte: scoreDate },
+      // Only reports CFTC had released by the score date — see cot-two-component.handler.ts.
+      releaseDate: { lte: scoreDate },
     },
     orderBy: { reportDate: 'desc' },
   });

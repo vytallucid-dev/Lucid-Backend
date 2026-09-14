@@ -28,8 +28,9 @@
  * authority on the allowed set and their ordinals; this table only names
  * which feed string denotes which rung.
  *
- * JP CPI uses "National Core CPI y/y" because FF reliably publishes that;
- * national headline CPI is not consistently named in FF. Spec deviation noted.
+ * JP CPI: FF publishes "National Core CPI y/y" but no national headline
+ * title. The tracked series is headline (user rule 2026-09-13), so that title
+ * is ALERT-ONLY — see ALERT-ONLY MAPPINGS below.
  *
  * ---------------------------------------------------------------------------
  * DELIBERATELY NOT MAPPED — euro-area national sub-PMIs
@@ -80,24 +81,14 @@
  * NOT companion pairs, despite also having >1 one() title for their code —
  * each is a DIFFERENT bug shape, deliberately left untouched here:
  *
- *   US_PCE_YOY   "Core PCE Price Index y/y" (primary — matches the tracked
- *                _YOY series) and "Core PCE Price Index m/m" are titled
- *                after the SAME release instant, which makes this look like
- *                a companion case — but m/m is a different measure than the
- *                tracked y/y line, not a second row of the same number. This
- *                spec elsewhere explicitly rejects wrong-cut mappings (see
- *                the "Core CPI m/m" rejection test). The m/m entry is most
- *                likely a mis-registration that should never have mapped to
- *                this code at all, not a companion to mark. Flagged, not
- *                removed, pending its own fix.
- *   EU_CPI_YOY   "Final CPI y/y" and "CPI Flash Estimate y/y" are Eurostat's
- *                FINAL and FLASH HICP prints — released ~2 weeks apart, not
- *                the same instant. This should be a rung() ladder (like
- *                EU_MFG_PMI's flash/final) but is currently two one()
- *                registrations with no variant distinguishing them, so Final
- *                silently overwrites Flash on the same DataPoint key. This
- *                is a scoring-data collision, not a calendar-display
- *                duplicate — needs its own ladder-registration fix.
+ *   US_PCE_YOY   RESOLVED 2026-09-14. "Core PCE Price Index m/m" was a
+ *                mis-registration — a different measure than the tracked
+ *                core YoY line — and is no longer mapped. Only
+ *                "Core PCE Price Index y/y" resolves to this code.
+ *   EU_CPI_YOY   RESOLVED 2026-09-14. "CPI Flash Estimate y/y" and
+ *                "Final CPI y/y" are now rung('flash') / rung('final') of a
+ *                registered ladder (seed-indicator-variants.ts), so Final no
+ *                longer overwrites Flash.
  *   CN_CAIXIN_PMI_MFG  "RatingDog Manufacturing PMI" / "Caixin Manufacturing
  *                PMI" are an old/new sponsor name for one release (see the
  *                CNY block's own comment) — the feed sends only ONE spelling
@@ -116,6 +107,14 @@ export interface FfEventResolution {
    * companion relationship to encode on top of it.
    */
   isPrimary: boolean;
+  /**
+   * ALERT-ONLY registration — see ALERT-ONLY MAPPINGS above
+   * FF_EVENT_TO_INDICATOR. Present (and true) only on titles whose feed number
+   * is a DIFFERENT measure than the tracked series. The calendar row still
+   * links to the indicator (dates, due-today, overdue), but ingestion never
+   * writes the feed's value into data_points. Absent everywhere else.
+   */
+  alertOnly?: true;
 }
 
 type CountryTitleMap = Record<string, Record<string, FfEventResolution>>;
@@ -134,7 +133,35 @@ const one = (code: string, opts?: { companion?: boolean }): FfEventResolution =>
 /** One rung of a registered release ladder. Always primary — see isPrimary doc above. */
 const rung = (code: string, variant: string): FfEventResolution => ({ code, variant, isPrimary: true });
 const companion = (code: string): FfEventResolution => one(code, { companion: true });
+/**
+ * Alert-only single-release registration. Always primary: it is the only title
+ * for its code, and overdue must still prompt the hand-filled entry.
+ */
+const alertOnly = (code: string): FfEventResolution => ({ code, variant: null, isPrimary: true, alertOnly: true });
 
+/**
+ * ---------------------------------------------------------------------------
+ * ALERT-ONLY MAPPINGS — the feed's number is the wrong measure
+ * ---------------------------------------------------------------------------
+ * Every Oracle macro value is hand-filled from Trading Economics; Forex Factory
+ * supplies release dates and alerts. For most titles FF's figure is the same
+ * measure as the tracked series, so writing it is harmless. For the titles
+ * below it is NOT — and Forex Factory publishes no title carrying the tracked
+ * measure (checked against the live feed, 2026-09-14). Writing FF's value
+ * would silently mix two measures in one series, so these link the calendar
+ * row for alerts and overdue only:
+ *
+ *   US_PPI_MOM / EU_PPI_MOM   tracked: PPI YoY      FF: "PPI m/m"
+ *   UK_PPI_MOM                tracked: PPI Output YoY  FF: "PPI Output m/m"
+ *   JP_RETAIL_YOY             tracked: Retail MoM   FF: "Retail Sales y/y"
+ *   JP_CPI_YOY                tracked: headline YoY FF: "National Core CPI y/y"
+ *   JP_TOKYO_CPI_YOY          tracked: headline YoY FF: "Tokyo Core CPI y/y"
+ *   AU_PPI_YOY                tracked: PPI YoY      FF: "PPI q/q"
+ *   AU_CONSCONF               tracked: index level  FF: "Westpac Consumer Sentiment" (shown as m/m %)
+ *
+ * The codes keep their historical suffixes (_MOM / _YOY); the indicator NAMES
+ * carry the measure actually tracked. User rules confirmed 2026-09-13.
+ */
 export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
   USD: {
     // VERIFIED from real fetch
@@ -146,11 +173,16 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
     // remap it back to US_ADP.
     // HIGH confidence — standard FF naming
     'CPI y/y': one('US_CPI_YOY'),
-    'PPI m/m': one('US_PPI_MOM'),
+    'PPI m/m': alertOnly('US_PPI_MOM'),
     'Retail Sales m/m': one('US_RETAIL_MOM'),
     'ISM Manufacturing PMI': one('US_ISM_MFG'),
     'ISM Services PMI': one('US_ISM_SVC'),
-    'CB Consumer Confidence': one('US_CB_CONSCONF'),
+    // US_CB_CONSCONF tracks University of Michigan sentiment (user rule
+    // 2026-09-13), NOT the Conference Board — the code keeps its historical
+    // name. Prelim VERIFIED from the live feed; "Revised" is FF's standard
+    // name for the final UoM print (HIGH).
+    'Prelim UoM Consumer Sentiment': rung('US_CB_CONSCONF', 'prelim'),
+    'Revised UoM Consumer Sentiment': rung('US_CB_CONSCONF', 'final'),
     'Non-Farm Employment Change': one('US_NFP'),
     'Unemployment Rate': one('US_UNEMP'),
     'ADP Non-Farm Employment Change': one('US_ADP'),
@@ -168,13 +200,12 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
     // maps a DIFFERENT measure (m/m) to the y/y-tracked code, not a second
     // row of the same release. Left as-is pending its own fix; do not mark
     // this companion() — that would misrepresent it as a resolved case.
-    'Core PCE Price Index m/m': one('US_PCE_YOY'),
   },
 
   EUR: {
     // VERIFIED
     'Consumer Confidence': one('EU_CCI'),
-    'Final CPI y/y': one('EU_CPI_YOY'),
+    'Final CPI y/y': rung('EU_CPI_YOY', 'final'),
     // Euro-area AGGREGATE PMIs only — see the sub-PMI note in the file header.
     'Flash Manufacturing PMI': rung('EU_MFG_PMI', 'flash'),
     'Flash Services PMI': rung('EU_SVC_PMI', 'flash'),
@@ -200,8 +231,8 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
     'Flash GDP q/q': rung('EU_GDP_QOQ', 'flash'),
     'Final GDP q/q': rung('EU_GDP_QOQ', 'final'),
     'Retail Sales m/m': one('EU_RETAIL_MOM'),
-    'PPI m/m': one('EU_PPI_MOM'),
-    'CPI Flash Estimate y/y': one('EU_CPI_YOY'),
+    'PPI m/m': alertOnly('EU_PPI_MOM'),
+    'CPI Flash Estimate y/y': rung('EU_CPI_YOY', 'flash'),
     'Unemployment Rate': one('EU_UNEMP'),
     'Main Refinancing Rate': one('EU_ECB_RATE'),
   },
@@ -224,13 +255,13 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
     // renders as context and never independently goes overdue.
     'GDP m/m': one('UK_GDP_MOM'),
     'Prelim GDP q/q': companion('UK_GDP_MOM'),
-    'PPI Output m/m': one('UK_PPI_MOM'),
+    'PPI Output m/m': alertOnly('UK_PPI_MOM'),
     'Official Bank Rate': one('UK_BOE_RATE'),
   },
 
   JPY: {
     // VERIFIED
-    'National Core CPI y/y': one('JP_CPI_YOY'),
+    'National Core CPI y/y': alertOnly('JP_CPI_YOY'),
     'Flash Manufacturing PMI': rung('JP_MFG_PMI', 'flash'),
     // HIGH
     'Final Manufacturing PMI': rung('JP_MFG_PMI', 'final'),
@@ -241,12 +272,12 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
     'Final GDP q/q': rung('JP_GDP_QOQ', 'final'),
     'PPI y/y': one('JP_PPI_YOY'),
     'Household Spending y/y': one('JP_HSHLD_SPEND'),
-    'Retail Sales y/y': one('JP_RETAIL_YOY'),
+    'Retail Sales y/y': alertOnly('JP_RETAIL_YOY'),
     'Consumer Confidence': one('JP_CONSCONF'),
     'Unemployment Rate': one('JP_UNEMP'),
     // GAP FILL — Tokyo Core CPI. Leads the national print by ~3 weeks and is
     // its own indicator, never a variant of JP_CPI_YOY.
-    'Tokyo Core CPI y/y': one('JP_TOKYO_CPI_YOY'),
+    'Tokyo Core CPI y/y': alertOnly('JP_TOKYO_CPI_YOY'),
     // GAP FILL — Labor Cash Earnings, Prelim → Final ladder.
     'Average Cash Earnings y/y': rung('JP_CASH_EARNINGS_YOY', 'prelim'),
     'Final Average Cash Earnings y/y': rung('JP_CASH_EARNINGS_YOY', 'final'),
@@ -262,11 +293,11 @@ export const FF_EVENT_TO_INDICATOR: CountryTitleMap = {
   // stores Indicator.country = "AU". The key here must match the FEED.
   AUD: {
     'CPI y/y': one('AU_CPI_YOY'),
-    'PPI q/q': one('AU_PPI_YOY'),
+    'PPI q/q': alertOnly('AU_PPI_YOY'),
     'Employment Change': one('AU_EMPLOYMENT_CHANGE'),
     'Unemployment Rate': one('AU_UNEMPLOYMENT'),
     'GDP q/q': one('AU_GDP_QOQ'),
-    'Westpac Consumer Sentiment': one('AU_CONSCONF'),
+    'Westpac Consumer Sentiment': alertOnly('AU_CONSCONF'),
     // Companion pair (see COMPANION EVENTS above): "Cash Rate" is primary —
     // it carries the number; "RBA Rate Statement" is companion context.
     'Cash Rate': one('AU_RBA_RATE'),

@@ -5,6 +5,10 @@ import { AppError } from '@core/middleware/error-handler';
 import { CftcFetchOptions, CftcFetchResult, CftcLegacyRow } from './types';
 
 const CFTC_BASE_URL = 'https://publicreporting.cftc.gov';
+// Rows per request. Was 100, which silently truncated any window wider than
+// ~11 weeks across the 9 tracked contracts (found in the 2026-09-14 recovery).
+// A result that reaches the cap is logged as a warning below.
+const CFTC_ROW_LIMIT = 5000;
 const ENDPOINT = '/resource/6dca-aqww.json';
 const DEFAULT_TIMEOUT_MS = 30000;
 
@@ -93,7 +97,7 @@ class CftcClient {
     const params: Record<string, string | number> = {
       $where: whereClause,
       $order: 'report_date_as_yyyy_mm_dd DESC',
-      $limit: 100,
+      $limit: CFTC_ROW_LIMIT,
     };
 
     const fetchedAt = new Date();
@@ -117,6 +121,13 @@ class CftcClient {
       }
 
       const rows = response.data as CftcLegacyRow[];
+
+      if (rows.length >= CFTC_ROW_LIMIT) {
+        logger.warn(
+          { requestUrl, rows: rows.length, limit: CFTC_ROW_LIMIT, daysBack },
+          'CFTC: result reached the row limit — older rows may be truncated',
+        );
+      }
 
       logger.info(
         { requestUrl, totalRowsReturned: rows.length, daysBack },

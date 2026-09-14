@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import {
+  checkExcursion,
   checkExitAfterEntry,
   checkExitNotFuture,
   checkExitPricePresent,
+  checkOutcomeCoherence,
   checkPartialCoherence,
   checkPlan,
   checkRiskBand,
@@ -42,6 +44,23 @@ export const EXIT_TYPES = ['TP', 'SL', 'Manual', 'Partial+TP', 'Partial+SL', 'BE
 export const CASH_FLOW_TYPES = ['deposit', 'withdrawal', 'payout'] as const;
 export const PLANNED_STATUSES = ['Watching', 'Ready', 'Invalidated', 'Cancelled'] as const;
 export const ENTITY_STATUSES = ['Active', 'Inactive'] as const;
+
+// The journal's review vocabularies (plan §6, decision D3). Short, fixed and
+// few: free-text psychology produced seven distinct spellings in 32 trades,
+// which no statistic can group. The frontend mirrors these lists exactly
+// (lib/journal-vocabulary.ts). An empty rule-break list means "followed the
+// plan".
+export const RULE_BREAKS = [
+  'entered-early',
+  'no-4h-confirmation',
+  'oversized',
+  'moved-stop',
+  'early-exit',
+  'late-exit',
+  'fomo-revenge',
+  'news-risk-ignored',
+] as const;
+export const PSYCHOLOGY_STATES = ['confident', 'neutral', 'anxious', 'fomo', 'revenge', 'bored', 'tired'] as const;
 
 const dateOnly = z
   .string()
@@ -124,6 +143,13 @@ export const createExecutionSchema = z
     // verbatim as the result (no recompute); the app's outcome/aggregates read
     // it. Null/omitted leaves the execution with no manual P&L override.
     net_pnl: z.number().finite().optional().nullable(),
+    // Excursion — optional, read off the chart at close. The best (MFE) and
+    // worst (MAE) price reached before the exit, and whether price came back to
+    // the entry after the MFE. Null means "not recorded", never zero. Stored
+    // only on a closed fill.
+    mfe_price: z.number().finite().positive().optional().nullable(),
+    mae_price: z.number().finite().positive().optional().nullable(),
+    returned_to_entry_after_mfe: z.boolean().optional().nullable(),
   })
   .superRefine((d, ctx) => {
     // Fill-level rules that can be judged from this body alone. The exit-date-
@@ -156,6 +182,9 @@ export const updateExecutionSchema = z.object({
   date_closed: dateTimeLike.optional().nullable(),
   exit_type: z.enum(EXIT_TYPES).optional(),
   net_pnl: z.number().finite().optional().nullable(),
+  mfe_price: z.number().finite().positive().optional().nullable(),
+  mae_price: z.number().finite().positive().optional().nullable(),
+  returned_to_entry_after_mfe: z.boolean().optional().nullable(),
 });
 // No rule refinement on the update schema. Every rule that applies to an edit
 // is advisory, and advisory failures must reach the service so it can record
@@ -178,7 +207,11 @@ export const createTradeSchema = z
     // value is stored verbatim with source='manual'. Range mirrors what the
     // Oracle can actually produce (it is signed, and not capped at 10).
     oracle_score_at_entry: z.number().int().min(-50).max(50).optional().nullable(),
-    psychology: z.string().trim().max(120).optional().nullable(),
+    // A new trade takes psychology from the chip list only. (An edit may also
+    // re-save the free-text value a trade was logged with before the chips
+    // existed — enforced in the service, which can see the stored value.)
+    psychology: z.enum(PSYCHOLOGY_STATES).optional().nullable(),
+    rule_breaks: z.array(z.enum(RULE_BREAKS)).max(RULE_BREAKS.length).optional(),
     notes: z.string().trim().max(5000).optional().nullable(),
     screenshots: z.array(z.string()).max(20).optional(),
     date_opened: dateTimeLike.optional(),
@@ -209,6 +242,34 @@ export const createTradeSchema = z
     // A create payload carries the idea and its fills together, so the
     // cross-object exit-ordering rule can be anchored to the exact row.
     d.executions.forEach((e, i) => {
+      // Outcome coherence needs the idea's direction and stop, so it is judged
+      // here, anchored to the fill. Create path: it blocks like every rule.
+      const coherence = checkOutcomeCoherence({
+        isClosed: e.is_closed,
+        direction: d.direction,
+        plannedSl: d.planned_sl,
+        entryPrice: e.entry_price,
+        mainExitPrice: e.main_exit_price ?? null,
+        partialExitPrice: e.partial_exit_price ?? null,
+        partialExitLotPct: e.partial_exit_lot_pct ?? null,
+        exitType: e.exit_type,
+        netPnl: e.net_pnl ?? null,
+      });
+      if (coherence) addProblem(ctx, coherence, ['executions', i]);
+
+      // Excursion sides need the idea's direction. Judged only on a closed
+      // fill — an open fill stores no excursion.
+      if (e.is_closed) {
+        for (const p of checkExcursion({
+          direction: d.direction,
+          entryPrice: e.entry_price,
+          mfePrice: e.mfe_price ?? null,
+          maePrice: e.mae_price ?? null,
+        })) {
+          addProblem(ctx, p, ['executions', i]);
+        }
+      }
+
       if (!e.date_closed) return;
       const problem = checkExitAfterEntry(dateOpened, new Date(e.date_closed));
       if (problem) addProblem(ctx, problem, ['executions', i]);
@@ -229,7 +290,10 @@ export const updateTradeSchema = z.object({
   // bound rejected edits of any trade whose stored score fell outside 1–10,
   // which was the intermittent trade-edit failure.
   oracle_score_at_entry: z.number().int().min(-50).max(50).optional().nullable(),
+  // Chip list, or the value already stored on this trade (checked in the
+  // service, which has the stored row).
   psychology: z.string().trim().max(120).optional().nullable(),
+  rule_breaks: z.array(z.enum(RULE_BREAKS)).max(RULE_BREAKS.length).optional(),
   notes: z.string().trim().max(5000).optional().nullable(),
   screenshots: z.array(z.string()).max(20).optional(),
   date_opened: dateTimeLike.optional(),

@@ -1263,6 +1263,22 @@ model Trade {
   oracleScoreEntryCapturedAt DateTime? @map("oracle_score_entry_captured_at")
   oracleScoreEntrySource     String?   @map("oracle_score_entry_source") @db.VarChar(10)
 
+  // The Compass regime in effect on the entry date, snapshotted when the
+  // trade is written — the same rules as the Oracle snapshot: captured once
+  // from the classification row on or before that date, never re-read, null
+  // when no classification exists that early.
+  //   compassRegimeEntrySource  'snapshot' — read from compass_classifications
+  //                             'archive'  — backfilled from the archive table
+  //                             'manual'   — set by hand
+  compassRegimeAtEntry     String?   @map("compass_regime_at_entry") @db.VarChar(15)
+  compassRegimeEntryDate   DateTime? @map("compass_regime_entry_date") @db.Date
+  compassRegimeEntrySource String?   @map("compass_regime_entry_source") @db.VarChar(10)
+
+  // Rules broken on this idea, as short tags chosen in the form. Empty = the
+  // trader recorded the idea as clean (or recorded nothing — see the journal
+  // analytics, which state how many ideas carry any review at all).
+  ruleBreaks String[] @default([]) @map("rule_breaks")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -1304,6 +1320,16 @@ model Execution {
   oracleScoreAtExit         Int?      @map("oracle_score_at_exit") @db.SmallInt
   oracleScoreExitDate       DateTime? @map("oracle_score_exit_date") @db.Date
   oracleScoreExitCapturedAt DateTime? @map("oracle_score_exit_captured_at")
+
+  // Excursion — optional, entered by hand from the chart at close.
+  //   mfePrice  best price reached before the exit (maximum favourable)
+  //   maePrice  worst price reached before the exit (maximum adverse)
+  //   returnedToEntryAfterMfe  did price come back to the entry after the MFE?
+  // Null means "not recorded", never zero. Every view that uses them states
+  // how many fills actually carry them.
+  mfePrice                Decimal? @map("mfe_price") @db.Decimal(20, 6)
+  maePrice                Decimal? @map("mae_price") @db.Decimal(20, 6)
+  returnedToEntryAfterMfe Boolean? @map("returned_to_entry_after_mfe")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

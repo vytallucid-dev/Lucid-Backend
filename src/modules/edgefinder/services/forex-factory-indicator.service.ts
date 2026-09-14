@@ -414,6 +414,9 @@ export async function fetchForexFactoryWeek(
 
   let totalEvents = 0;
   let mappedCount = 0;
+  // Mapped titles whose feed value is a different measure than the tracked
+  // series (alertOnly in forex-factory-event-mapping.ts): stored, never written.
+  let mappedAlertOnlyCount = 0;
   let writtenWithActual = 0;
   let writtenForecastOnly = 0;
   let mappedDeferredCount = 0;
@@ -541,6 +544,20 @@ export async function fetchForexFactoryWeek(
 
       mappedCount += 1;
 
+      if (resolution?.alertOnly) {
+        // ALERT-ONLY title — see forex-factory-event-mapping.ts. Forex Factory's
+        // number here is a different measure than the series the user tracks
+        // (e.g. PPI m/m against a YoY line). The occurrence is already stored
+        // above, so dates, due-today and overdue keep working; the value is
+        // never written, or two measures would be mixed in one series.
+        mappedAlertOnlyCount += 1;
+        logger.info(
+          { alert_only_event: true, indicatorCode, title: event.title, country: event.country },
+          'ForexFactory: alert-only mapping; event stored, value not written',
+        );
+        continue;
+      }
+
       if (resolved.noActualYet) {
         // No usable actual yet, so no score can be computed. The occurrence
         // IS stored (above) with its date, forecast, previous and impact —
@@ -650,6 +667,7 @@ export async function fetchForexFactoryWeek(
         writtenWithActual,
         writtenForecastOnly,
         deferredCount: mappedDeferredCount,
+        alertOnlyCount: mappedAlertOnlyCount,
         unmappedCount,
         rowsInserted,
         rowsUpdated,
@@ -700,6 +718,7 @@ export async function fetchForexFactoryWeek(
         writtenWithActual,
         writtenForecastOnly,
         deferredCount: mappedDeferredCount,
+        alertOnlyCount: mappedAlertOnlyCount,
         unmappedCount,
         rowsInserted,
         rowsUpdated,

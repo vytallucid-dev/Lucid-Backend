@@ -2,19 +2,13 @@ import { createApp } from './app';
 import { env } from '@config/env';
 import { logger } from '@core/utils/logger';
 import { verifyDatabaseConnection, disconnectDatabase } from '@core/db/prisma';
-// ── SCHEDULER ON HOLD — database recovery, 2026-09-14 ─────────────────────────
-// The production scheduler kept writing into the database while it was being
-// rebuilt, so every cron registration is commented out until recovery completes.
-// RE-ENABLE BEFORE THE NEXT PRODUCTION PUSH: restore these imports and the
-// registrations in bootstrap(), and restore `npx prisma migrate deploy && ` in
-// package.json's start script. See docs/plans/DATABASE_RECOVERY_PLAN.md.
-// import { registerNiftyCrons } from '@modules/nifty/jobs/cron-registry';
-// import { registerForexFactoryFetchCron } from '@modules/edgefinder/jobs/forex-factory-fetch.job';
-// import { registerCftcCotFetchCron } from '@modules/edgefinder/jobs/cftc-cot-fetch.job';
-// import { registerCompassInputFetchCron } from '@modules/edgefinder/jobs/compass-input-fetch.job';
-// import { registerCompassClassifierCron } from '@modules/edgefinder/jobs/compass-classifier.job';
-// import { registerScorecardAssemblyCron } from '@modules/edgefinder/jobs/scorecard-assembly.job';
-// import { registerPairScoreAssemblyCron } from '@modules/edgefinder/jobs/pair-score-assembly.job';
+import { registerNiftyCrons } from '@modules/nifty/jobs/cron-registry';
+import { registerForexFactoryFetchCron } from '@modules/edgefinder/jobs/forex-factory-fetch.job';
+import { registerCftcCotFetchCron } from '@modules/edgefinder/jobs/cftc-cot-fetch.job';
+import { registerCompassInputFetchCron } from '@modules/edgefinder/jobs/compass-input-fetch.job';
+import { registerCompassClassifierCron } from '@modules/edgefinder/jobs/compass-classifier.job';
+import { registerScorecardAssemblyCron } from '@modules/edgefinder/jobs/scorecard-assembly.job';
+import { registerPairScoreAssemblyCron } from '@modules/edgefinder/jobs/pair-score-assembly.job';
 
 async function bootstrap(): Promise<void> {
   try {
@@ -22,17 +16,15 @@ async function bootstrap(): Promise<void> {
 
     const app = createApp();
 
-    // SCHEDULER ON HOLD (database recovery) — see the note above the imports.
-    // if (process.env.NODE_ENV !== 'test') {
-    //   registerNiftyCrons();
-    //   registerForexFactoryFetchCron();
-    //   registerCftcCotFetchCron();
-    //   registerCompassInputFetchCron();
-    //   registerCompassClassifierCron();
-    //   registerScorecardAssemblyCron();
-    //   registerPairScoreAssemblyCron();
-    // }
-    logger.warn('Scheduler ON HOLD for database recovery — no cron jobs registered');
+    if (process.env.NODE_ENV !== 'test') {
+      registerNiftyCrons();
+      registerForexFactoryFetchCron();
+      registerCftcCotFetchCron();
+      registerCompassInputFetchCron();
+      registerCompassClassifierCron();
+      registerScorecardAssemblyCron();
+      registerPairScoreAssemblyCron();
+    }
 
     const server = app.listen(env.PORT, () => {
       logger.info(`Lucid backend running on port ${env.PORT} (${env.NODE_ENV})`);

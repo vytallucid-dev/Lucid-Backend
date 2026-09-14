@@ -196,4 +196,12 @@ describe('cotTwoComponentHandler', () => {
     expect(call.where.isCurrent).toBe(true);
     expect(call.orderBy.reportDate).toBe('desc');
   });
+
+  it('only uses reports released by the scoring date (Friday release, not Tuesday report date)', async () => {
+    mockAssetOk();
+    mockCotRow(60, 1);
+    await cotTwoComponentHandler(ctx());
+    const call = mockedCotFindFirst.mock.calls[0][0];
+    expect(call.where.releaseDate).toEqual({ lte: call.where.reportDate.lte });
+  });
 });

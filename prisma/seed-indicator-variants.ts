@@ -98,6 +98,27 @@ const VARIANT_SETS: Record<string, { variant: string; ordinal: number; isFinal: 
     { variant: 'prelim', ordinal: 1, isFinal: false },
     { variant: 'final', ordinal: 2, isFinal: true },
   ],
+  // Added 2026-09-14 (user rules, recovery Stage 5). The user stores every rung
+  // and the latest print scores; these series previously had no ladder.
+  // EUR HICP: Flash (~month end) then Final (~mid-month).
+  EU_CPI_YOY: [
+    { variant: 'flash', ordinal: 1, isFinal: false },
+    { variant: 'final', ordinal: 2, isFinal: true },
+  ],
+  // US_CB_CONSCONF is University of Michigan sentiment: Prelim then Final (FF "Revised").
+  US_CB_CONSCONF: [
+    { variant: 'prelim', ordinal: 1, isFinal: false },
+    { variant: 'final', ordinal: 2, isFinal: true },
+  ],
+  // India PMIs (NIFTY): Flash then Final.
+  IND_NIFTY_01_PMI_MFG: [
+    { variant: 'flash', ordinal: 1, isFinal: false },
+    { variant: 'final', ordinal: 2, isFinal: true },
+  ],
+  IND_NIFTY_02_PMI_SVC: [
+    { variant: 'flash', ordinal: 1, isFinal: false },
+    { variant: 'final', ordinal: 2, isFinal: true },
+  ],
 };
 
 async function main() {

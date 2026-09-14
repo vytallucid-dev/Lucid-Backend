@@ -306,7 +306,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'US_CB_CONSCONF',
-    name: 'US Consumer Confidence (Conf. Board)',
+    name: 'US Consumer Sentiment (Michigan)',
     category: 'sentiment',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -314,7 +314,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Sentiment',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
-    description: 'Conference Board, NOT Michigan Sentiment.',
+    description: 'University of Michigan sentiment, prelim→final ladder (user rule 2026-09-13). Code keeps its historical CB name.',
   },
   {
     code: 'US_CPI_YOY',
@@ -330,7 +330,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'US_PPI_MOM',
-    name: 'US PPI MoM (Headline)',
+    name: 'US PPI YoY (Headline)',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -338,7 +338,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
-    description: 'Headline final demand, NOT Core.',
+    description: 'Headline final demand YoY, NOT Core. Code keeps its historical _MOM suffix; the tracked measure is YoY (user rule 2026-09-13). FF publishes m/m only, mapped alert-only.',
   },
   {
     code: 'US_PCE_YOY',
@@ -437,7 +437,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'EU_MFG_PMI',
-    name: 'EU HCOB Manufacturing PMI',
+    name: 'EU S&P Global Manufacturing PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -449,7 +449,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'EU_SVC_PMI',
-    name: 'EU HCOB Services PMI',
+    name: 'EU S&P Global Services PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -492,11 +492,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
-    description: 'HICP headline final (~mid-month). NOT flash, NOT Core.',
+    description: 'HICP headline YoY, flash→final ladder; the latest print scores. NOT Core.',
   },
   {
     code: 'EU_PPI_MOM',
-    name: 'EU PPI MoM (Headline)',
+    name: 'EU PPI YoY (Headline)',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -504,7 +504,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
-    description: 'Headline, NOT ex-energy.',
+    description: 'Headline YoY, NOT ex-energy. Code keeps its historical _MOM suffix (user rule 2026-09-13). FF publishes m/m only, mapped alert-only.',
   },
   {
     code: 'EU_UNEMP',
@@ -592,7 +592,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'UK_PPI_MOM',
-    name: 'UK PPI Output MoM',
+    name: 'UK PPI Output YoY',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -600,7 +600,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Inflation',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
-    description: 'OUTPUT PPI, NOT Input.',
+    description: 'OUTPUT PPI YoY, NOT Input. Code keeps its historical _MOM suffix (user rule 2026-09-13). FF publishes m/m only, mapped alert-only.',
   },
   {
     code: 'UK_UNEMP',
@@ -630,7 +630,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'JP_MFG_PMI',
-    name: 'JP Jibun Bank Manufacturing PMI',
+    name: 'JP S&P Global Manufacturing PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -642,7 +642,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'JP_SVC_PMI',
-    name: 'JP Jibun Bank Services PMI',
+    name: 'JP S&P Global Services PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -654,7 +654,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'JP_RETAIL_YOY',
-    name: 'JP Retail Sales YoY',
+    name: 'JP Retail Sales MoM',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -662,7 +662,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
-    description: 'YoY, NOT MoM.',
+    description: 'MoM, like every other economy (user rule 2026-09-13). Code keeps its historical _YOY suffix. FF publishes y/y only, mapped alert-only.',
   },
   {
     code: 'JP_CONSCONF',
@@ -844,7 +844,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'JP_TOKYO_CPI_YOY',
-    name: 'JP Tokyo Core CPI YoY',
+    name: 'JP Tokyo CPI YoY (Headline)',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -853,7 +853,7 @@ const INDICATORS: IndicatorSeed[] = [
     dataSource: 'forex_factory',
     sourceSeriesId: null,
     description:
-      'Leading indicator for national CPI. Reuses the SAME JPY CurrencyCycleStance row as JP_CPI_YOY — no second stance record, no second gate, so both CPI rows flip together when the declared cycle flips.',
+      'Headline Tokyo CPI YoY, NOT core (user rule 2026-09-13); FF publishes core only, mapped alert-only. Leading indicator for national CPI. Reuses the SAME JPY CurrencyCycleStance row as JP_CPI_YOY — no second stance record, no second gate, so both CPI rows flip together when the declared cycle flips.',
   },
 
   // ---------------------------------------------------------------
@@ -875,7 +875,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'AU_PMI_MFG',
-    name: 'AU Judo Bank Manufacturing PMI',
+    name: 'AU S&P Global Manufacturing PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -883,11 +883,11 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
-    description: 'Judo Bank / S&P Global. Flash→final.',
+    description: 'S&P Global (Judo Bank sponsored). Flash→final.',
   },
   {
     code: 'AU_PMI_SVC',
-    name: 'AU Judo Bank Services PMI',
+    name: 'AU S&P Global Services PMI',
     category: 'global',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -895,7 +895,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Growth',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
-    description: 'Judo Bank / S&P Global.',
+    description: 'S&P Global (Judo Bank sponsored). Flash→final.',
   },
   {
     code: 'AU_MHSI_MOM',
@@ -927,7 +927,7 @@ const INDICATORS: IndicatorSeed[] = [
   },
   {
     code: 'AU_CONSCONF',
-    name: 'AU Westpac Consumer Confidence',
+    name: 'AU Westpac-MI Consumer Sentiment',
     category: 'sentiment',
     tool: 'edgefinder',
     frequency: 'monthly',
@@ -935,7 +935,7 @@ const INDICATORS: IndicatorSeed[] = [
     uiGroup: 'Sentiment',
     dataSource: 'forex_factory',
     sourceSeriesId: null,
-    description: 'Westpac-Melbourne Institute. Scores fully, as for every other currency.',
+    description: 'Westpac-Melbourne Institute index LEVEL (e.g. 84.4), NOT the m/m % change Forex Factory displays — the FF title is alert-only so it can never write a % change into this series. Scores fully, as for every other currency.',
   },
   {
     code: 'AU_CPI_YOY',
@@ -960,7 +960,7 @@ const INDICATORS: IndicatorSeed[] = [
     dataSource: 'forex_factory',
     sourceSeriesId: null,
     description:
-      'QUARTERLY against monthly counterparts. Scores anyway (JP Services PMI precedent) but must surface in the staleness display.',
+      'YoY; Forex Factory publishes PPI q/q only, so its title is alert-only. QUARTERLY against monthly counterparts. Scores anyway (JP Services PMI precedent) but must surface in the staleness display.',
   },
   {
     code: 'AU_UNEMPLOYMENT',
@@ -1383,7 +1383,7 @@ const PAIR_TEMPLATE_ROWS: PairTemplateSeed[] = [
   {
     rowOrder: 19,
     rowCode: 'TOKYO_CPI',
-    displayName: 'Tokyo Core CPI',
+    displayName: 'Tokyo CPI',
     uiGroup: 'Inflation',
     treatment: 'JPY_ONLY',
     usIndicatorCode: null,
